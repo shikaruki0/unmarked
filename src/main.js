@@ -1,0 +1,1713 @@
+import * as THREE from 'three';
+import './style.css';
+import {
+  BOT_NAMES,
+  assignHiddenKiller,
+  clamp,
+  createSeededRandom,
+  formatClock,
+  getAliveCount,
+  getObjectiveState,
+  getSurvivorCount,
+  pickEnvironmentalEvent,
+} from './game-logic.js';
+
+const $ = (selector) => document.querySelector(selector);
+
+const dom = {
+  canvas: $('#game-canvas'),
+  loading: $('#loading-screen'),
+  hud: $('#hud'),
+  intro: $('#intro-screen'),
+  start: $('#start-button'),
+  accessibility: $('#accessibility-screen'),
+  accessibilityButton: $('#accessibility-button'),
+  closeAccessibility: $('#close-accessibility'),
+  reducedMotion: $('#reduced-motion'),
+  highContrast: $('#high-contrast'),
+  pause: $('#pause-screen'),
+  pauseButton: $('#pause-button'),
+  resume: $('#resume-button'),
+  restartFromPause: $('#restart-from-pause'),
+  result: $('#result-screen'),
+  resultKicker: $('#result-kicker'),
+  resultHeading: $('#result-heading'),
+  resultCopy: $('#result-copy'),
+  reportGrid: $('#report-grid'),
+  playAgain: $('#play-again-button'),
+  roleCard: $('#role-card'),
+  matchClock: $('#match-clock'),
+  roleTitle: $('#role-title'),
+  roleCopy: $('#role-copy'),
+  objectiveTitle: $('#objective-title'),
+  objectiveCopy: $('#objective-copy'),
+  objectiveFill: $('#objective-progress-fill'),
+  aliveCount: $('#alive-count'),
+  healthFill: $('#health-fill'),
+  healthValue: $('#health-value'),
+  staminaFill: $('#stamina-fill'),
+  heldItem: $('#held-item'),
+  eventLog: $('#event-log'),
+  interaction: $('#interaction-prompt'),
+  interactionText: $('#interaction-text'),
+  action: $('#action-prompt'),
+  actionText: $('#action-text'),
+  subtitle: $('#subtitle'),
+  damageFlash: $('#damage-flash'),
+  minimap: $('#minimap'),
+};
+
+const COLORS = {
+  aqua: 0x7fffc8,
+  aquaSoft: 0x3ba87d,
+  red: 0xfc4c50,
+  redDark: 0x6e1018,
+  amber: 0xf7bd4e,
+  floor: 0x101d1c,
+  wall: 0x1d302e,
+  wallTrim: 0x35514c,
+  uniform: 0x506763,
+  skin: 0xb98269,
+};
+
+const ZONES = {
+  generatorA: { id: 'generatorA', label: 'GENERATOR 01', position: new THREE.Vector3(-23, 0, -20), access: new THREE.Vector3(-16.5, 0, -20) },
+  generatorB: { id: 'generatorB', label: 'GENERATOR 02', position: new THREE.Vector3(23, 0, -20), access: new THREE.Vector3(16.5, 0, -20) },
+  generatorC: { id: 'generatorC', label: 'GENERATOR 03', position: new THREE.Vector3(-23, 0, 20), access: new THREE.Vector3(-16.5, 0, 20) },
+  security: { id: 'security', label: 'SECURITY', position: new THREE.Vector3(23, 0, 20), access: new THREE.Vector3(16.5, 0, 20) },
+  exit: { id: 'exit', label: 'QUARANTINE EXIT', position: new THREE.Vector3(0, 0, -31.3), access: new THREE.Vector3(0, 0, -28) },
+  lobby: { id: 'lobby', label: 'LOBBY', position: new THREE.Vector3(0, 0, 8), access: new THREE.Vector3(0, 0, 8) },
+};
+
+const vecDistance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const randomFrom = (random, list) => list[Math.floor(random() * list.length)];
+const toRadians = (degrees) => (degrees * Math.PI) / 180;
+
+function lerpAngle(a, b, amount) {
+  let difference = (b - a + Math.PI) % (Math.PI * 2) - Math.PI;
+  if (difference < -Math.PI) difference += Math.PI * 2;
+  return a + difference * Math.min(1, amount);
+}
+
+function makeLabelSprite(text, color = '#a4ffcf', scale = 1) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 96;
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = 'rgba(3, 14, 15, 0.84)';
+  context.fillRect(0, 10, canvas.width, 76);
+  context.strokeStyle = color;
+  context.globalAlpha = 0.55;
+  context.strokeRect(1, 11, canvas.width - 2, 74);
+  context.globalAlpha = 1;
+  context.fillStyle = color;
+  context.font = '600 38px monospace';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(3.8 * scale, 0.72 * scale, 1);
+  return sprite;
+}
+
+/** Lightweight generated audio: every cue is created locally after player input. */
+class AudioDirector {
+  constructor() {
+    this.context = null;
+    this.master = null;
+    this.ambient = null;
+    this.enabled = true;
+  }
+
+  start() {
+    if (!this.enabled) return;
+    try {
+      if (!this.context) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        this.context = new AudioContextClass();
+        this.master = this.context.createGain();
+        this.master.gain.value = 0.26;
+        this.master.connect(this.context.destination);
+        this.startAmbient();
+      }
+      if (this.context.state === 'suspended') this.context.resume();
+    } catch {
+      // Audio is an enhancement; gameplay remains complete if a browser blocks it.
+    }
+  }
+
+  startAmbient() {
+    if (!this.context || this.ambient) return;
+    const drone = this.context.createOscillator();
+    const droneGain = this.context.createGain();
+    const filter = this.context.createBiquadFilter();
+    const tremolo = this.context.createOscillator();
+    const tremoloGain = this.context.createGain();
+    drone.type = 'sine';
+    drone.frequency.value = 46;
+    filter.type = 'lowpass';
+    filter.frequency.value = 180;
+    droneGain.gain.value = 0.022;
+    tremolo.frequency.value = 0.09;
+    tremoloGain.gain.value = 0.012;
+    tremolo.connect(tremoloGain).connect(droneGain.gain);
+    drone.connect(filter).connect(droneGain).connect(this.master);
+    drone.start();
+    tremolo.start();
+    this.ambient = { drone, tremolo, droneGain };
+  }
+
+  tone(frequency, duration = 0.12, type = 'sine', volume = 0.1, slideTo = null) {
+    if (!this.context || !this.master) return;
+    const now = this.context.currentTime;
+    const oscillator = this.context.createOscillator();
+    const gain = this.context.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, now);
+    if (slideTo) oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), now + duration);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(volume, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    oscillator.connect(gain).connect(this.master);
+    oscillator.start(now);
+    oscillator.stop(now + duration + 0.025);
+  }
+
+  noise(duration = 0.15, volume = 0.08, cutoff = 1000) {
+    if (!this.context || !this.master) return;
+    const length = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, length, this.context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    filter.type = 'lowpass';
+    filter.frequency.value = cutoff;
+    gain.gain.value = volume;
+    source.buffer = buffer;
+    source.connect(filter).connect(gain).connect(this.master);
+    source.start();
+  }
+
+  cue(type) {
+    switch (type) {
+      case 'repair': this.tone(190, 0.08, 'square', 0.04, 230); break;
+      case 'complete': this.tone(220, 0.15, 'sine', 0.09, 440); setTimeout(() => this.tone(440, 0.22, 'sine', 0.07, 660), 95); break;
+      case 'sabotage': this.tone(130, 0.22, 'sawtooth', 0.08, 45); this.noise(0.08, 0.04, 700); break;
+      case 'pickup': this.tone(510, 0.1, 'triangle', 0.07, 760); break;
+      case 'alarm': this.tone(680, 0.18, 'square', 0.08, 520); setTimeout(() => this.tone(680, 0.18, 'square', 0.07, 520), 240); break;
+      case 'attack': this.noise(0.18, 0.13, 460); this.tone(74, 0.15, 'sawtooth', 0.09, 38); break;
+      case 'hurt': this.tone(90, 0.25, 'sawtooth', 0.11, 42); this.noise(0.1, 0.07, 320); break;
+      case 'taser': this.tone(156, 0.12, 'square', 0.09, 990); this.noise(0.1, 0.05, 1600); break;
+      case 'evidence': this.tone(330, 0.12, 'triangle', 0.05, 510); break;
+      case 'escape': this.tone(260, 0.35, 'sine', 0.12, 620); break;
+      case 'death': this.tone(120, 0.6, 'sawtooth', 0.09, 28); break;
+      default: break;
+    }
+  }
+}
+
+class UnmarkedGame {
+  constructor() {
+    this.renderer = new THREE.WebGLRenderer({ canvas: dom.canvas, antialias: true, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.86;
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x020708);
+    this.scene.fog = new THREE.FogExp2(0x071110, 0.026);
+    this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.08, 145);
+    this.camera.rotation.order = 'YXZ';
+    this.scene.add(this.camera);
+    this.clock = new THREE.Clock();
+    this.audio = new AudioDirector();
+
+    this.phase = 'menu';
+    this.matchTime = 0;
+    this.random = Math.random;
+    this.yaw = Math.PI;
+    this.pitch = -0.06;
+    this.cameraShake = 0;
+    this.keys = new Set();
+    this.staticColliders = [];
+    this.staticGroup = new THREE.Group();
+    this.matchGroup = new THREE.Group();
+    this.fxGroup = new THREE.Group();
+    this.scene.add(this.staticGroup, this.matchGroup, this.fxGroup);
+    this.lights = [];
+    this.vfx = [];
+    this.eventLines = [];
+    this.subtitleTimer = null;
+    this.lastPrompt = null;
+    this.flashlightOn = true;
+    this.flashlight = null;
+    this.flashlightTarget = null;
+    this.blackoutUntil = 0;
+    this.fogSurgeUntil = 0;
+    this.nextEventAt = 30;
+    this.exitDoorOpen = 0;
+    this.awaitingPointerLock = false;
+    this.settings = { reducedMotion: false, highContrast: false };
+
+    this.player = {
+      id: 'player',
+      name: 'YOU',
+      role: 'survivor',
+      position: new THREE.Vector3(0, 0, 16),
+      alive: true,
+      escaped: false,
+      health: 100,
+      stamina: 100,
+      held: null,
+      hidden: false,
+      interaction: null,
+      actionCooldown: 0,
+    };
+
+    this.setupScene();
+    this.buildFacility();
+    this.bindEvents();
+    this.updateCamera();
+    this.renderLoop();
+    window.setTimeout(() => dom.loading.classList.add('done'), 650);
+  }
+
+  setupScene() {
+    const hemisphere = new THREE.HemisphereLight(0x476360, 0x06100e, 0.65);
+    this.scene.add(hemisphere);
+    this.ambientLight = new THREE.AmbientLight(0x6ea998, 0.32);
+    this.scene.add(this.ambientLight);
+
+    const moon = new THREE.DirectionalLight(0x97d8ca, 0.7);
+    moon.position.set(-16, 25, 9);
+    moon.castShadow = true;
+    moon.shadow.mapSize.set(1024, 1024);
+    moon.shadow.camera.left = -45;
+    moon.shadow.camera.right = 45;
+    moon.shadow.camera.top = 45;
+    moon.shadow.camera.bottom = -45;
+    this.scene.add(moon);
+
+    const starsGeometry = new THREE.BufferGeometry();
+    const starPositions = [];
+    for (let i = 0; i < 220; i += 1) {
+      const radius = 42 + Math.random() * 62;
+      starPositions.push((Math.random() - 0.5) * radius * 2, 14 + Math.random() * 36, (Math.random() - 0.5) * radius * 2);
+    }
+    starsGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+    const stars = new THREE.Points(starsGeometry, new THREE.PointsMaterial({ color: 0x83cbb6, size: 0.16, transparent: true, opacity: 0.42 }));
+    this.scene.add(stars);
+
+    this.flashlight = new THREE.SpotLight(0xdffff1, 2.5, 25, toRadians(30), 0.66, 1.4);
+    this.flashlight.castShadow = false;
+    this.flashlight.position.set(0, 1.5, 0);
+    this.flashlightTarget = new THREE.Object3D();
+    this.flashlightTarget.position.set(0, 1.4, -9);
+    this.camera.add(this.flashlight, this.flashlightTarget);
+    this.flashlight.target = this.flashlightTarget;
+  }
+
+  bindEvents() {
+    dom.start.addEventListener('click', () => this.startMatch());
+    dom.playAgain.addEventListener('click', () => this.startMatch());
+    dom.pauseButton.addEventListener('click', () => this.pauseGame());
+    dom.resume.addEventListener('click', () => this.resumeGame());
+    dom.restartFromPause.addEventListener('click', () => this.startMatch());
+    dom.accessibilityButton.addEventListener('click', () => dom.accessibility.classList.remove('hidden'));
+    dom.closeAccessibility.addEventListener('click', () => dom.accessibility.classList.add('hidden'));
+    dom.reducedMotion.addEventListener('change', () => {
+      this.settings.reducedMotion = dom.reducedMotion.checked;
+      document.body.classList.toggle('reduced-motion', this.settings.reducedMotion);
+    });
+    dom.highContrast.addEventListener('change', () => {
+      this.settings.highContrast = dom.highContrast.checked;
+      document.body.classList.toggle('high-contrast', this.settings.highContrast);
+    });
+
+    window.addEventListener('resize', () => this.resize());
+    document.addEventListener('keydown', (event) => this.onKeyDown(event));
+    document.addEventListener('keyup', (event) => this.keys.delete(event.code));
+    document.addEventListener('mousemove', (event) => {
+      if (document.pointerLockElement !== dom.canvas || this.phase !== 'playing') return;
+      const modifier = this.settings.reducedMotion ? 0.00095 : 0.00175;
+      this.yaw -= event.movementX * modifier;
+      this.pitch = clamp(this.pitch - event.movementY * modifier, -1.25, 1.08);
+    });
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement === dom.canvas) {
+        this.awaitingPointerLock = false;
+        return;
+      }
+      if (this.phase === 'playing' && !this.awaitingPointerLock) this.pauseGame(true);
+    });
+    dom.canvas.addEventListener('mousedown', (event) => {
+      if (this.phase === 'playing' && document.pointerLockElement !== dom.canvas) this.requestPointerLock();
+      if (this.phase === 'playing' && event.button === 0 && document.pointerLockElement === dom.canvas) this.useAction();
+    });
+  }
+
+  onKeyDown(event) {
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyQ', 'ShiftLeft', 'ShiftRight'].includes(event.code)) event.preventDefault();
+    this.keys.add(event.code);
+    if (this.phase !== 'playing' || event.repeat) return;
+    if (event.code === 'KeyE') this.beginInteraction();
+    if (event.code === 'KeyF') this.useAction();
+    if (event.code === 'KeyQ') {
+      this.flashlightOn = !this.flashlightOn;
+      this.showSubtitle(this.flashlightOn ? 'Flashlight on.' : 'Flashlight off.', 1050);
+      this.audio.cue(this.flashlightOn ? 'pickup' : 'sabotage');
+    }
+  }
+
+  requestPointerLock() {
+    this.awaitingPointerLock = true;
+    const lock = dom.canvas.requestPointerLock?.();
+    if (lock?.catch) lock.catch(() => { this.awaitingPointerLock = false; });
+    window.setTimeout(() => { this.awaitingPointerLock = false; }, 700);
+  }
+
+  pauseGame(fromPointerChange = false) {
+    if (this.phase !== 'playing') return;
+    this.phase = 'paused';
+    this.keys.clear();
+    dom.pause.classList.remove('hidden');
+    if (!fromPointerChange && document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
+  }
+
+  resumeGame() {
+    if (this.phase !== 'paused') return;
+    dom.pause.classList.add('hidden');
+    this.phase = 'playing';
+    this.requestPointerLock();
+  }
+
+  resize() {
+    this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  addBox({ x, y, z, width, height, depth, material, collision = true, group = this.staticGroup, castShadow = true, receiveShadow = true }) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = receiveShadow;
+    group.add(mesh);
+    if (collision) this.staticColliders.push({ minX: x - width / 2, maxX: x + width / 2, minZ: z - depth / 2, maxZ: z + depth / 2 });
+    return mesh;
+  }
+
+  addFacilityLight(position, color = COLORS.aqua, intensity = 1.4, distance = 13) {
+    const fixture = new THREE.Mesh(
+      new THREE.BoxGeometry(1.15, 0.12, 0.42),
+      new THREE.MeshStandardMaterial({ color: 0x7bb5a3, emissive: color, emissiveIntensity: 1.7, roughness: 0.55 }),
+    );
+    fixture.position.copy(position);
+    fixture.position.y -= 0.15;
+    this.staticGroup.add(fixture);
+    const light = new THREE.PointLight(color, intensity, distance, 1.7);
+    light.position.copy(position);
+    this.scene.add(light);
+    this.lights.push({ light, base: intensity, phase: Math.random() * 10 });
+    return light;
+  }
+
+  addRoom({ zone, open }) {
+    const wallMaterial = this.wallMaterial;
+    const trimMaterial = this.trimMaterial;
+    const x = zone.position.x;
+    const z = zone.position.z;
+    const width = 12;
+    const depth = 12;
+    const wallHeight = 4.8;
+    if (open === 'east') {
+      this.addBox({ x: x - width / 2, y: wallHeight / 2, z, width: 0.65, height: wallHeight, depth, material: wallMaterial });
+      this.addBox({ x, y: wallHeight / 2, z: z - depth / 2, width, height: wallHeight, depth: 0.65, material: wallMaterial });
+      this.addBox({ x, y: wallHeight / 2, z: z + depth / 2, width, height: wallHeight, depth: 0.65, material: wallMaterial });
+      this.addBox({ x: x - width / 2 + 0.38, y: 1.15, z, width: 0.13, height: 2.2, depth: 2.8, material: trimMaterial, collision: false });
+    } else {
+      this.addBox({ x: x + width / 2, y: wallHeight / 2, z, width: 0.65, height: wallHeight, depth, material: wallMaterial });
+      this.addBox({ x, y: wallHeight / 2, z: z - depth / 2, width, height: wallHeight, depth: 0.65, material: wallMaterial });
+      this.addBox({ x, y: wallHeight / 2, z: z + depth / 2, width, height: wallHeight, depth: 0.65, material: wallMaterial });
+      this.addBox({ x: x + width / 2 - 0.38, y: 1.15, z, width: 0.13, height: 2.2, depth: 2.8, material: trimMaterial, collision: false });
+    }
+    const sign = makeLabelSprite(zone.label, '#a5f7ce', 0.88);
+    sign.position.set(open === 'east' ? x - width / 2 + 0.45 : x + width / 2 - 0.45, 3.5, z);
+    sign.material.rotation = open === 'east' ? Math.PI / 2 : -Math.PI / 2;
+    this.staticGroup.add(sign);
+    this.addFacilityLight(new THREE.Vector3(x, 4.35, z), COLORS.aquaSoft, 1.25, 10);
+
+    const desk = this.addBox({ x: x + (open === 'east' ? -2.2 : 2.2), y: 0.55, z: z + 2.7, width: 2.2, height: 1.1, depth: 1.1, material: this.propMaterial, collision: true });
+    desk.rotation.y = open === 'east' ? 0.15 : -0.15;
+    for (let i = 0; i < 3; i += 1) {
+      const crate = this.addBox({
+        x: x + (this.randomStatic() - 0.5) * 7,
+        y: 0.45,
+        z: z + (this.randomStatic() - 0.5) * 7,
+        width: 0.8 + this.randomStatic() * 0.55,
+        height: 0.9,
+        depth: 0.8 + this.randomStatic() * 0.5,
+        material: this.crateMaterial,
+        collision: false,
+      });
+      crate.rotation.y = this.randomStatic() * Math.PI;
+    }
+  }
+
+  randomStatic() {
+    // Fixed-looking decorative randomness without affecting actual match randomness.
+    return Math.random();
+  }
+
+  buildFacility() {
+    this.floorMaterial = new THREE.MeshStandardMaterial({ color: COLORS.floor, roughness: 0.9, metalness: 0.13 });
+    this.wallMaterial = new THREE.MeshStandardMaterial({ color: COLORS.wall, roughness: 0.82, metalness: 0.16 });
+    this.trimMaterial = new THREE.MeshStandardMaterial({ color: COLORS.wallTrim, roughness: 0.55, metalness: 0.38, emissive: 0x10201c, emissiveIntensity: 0.3 });
+    this.propMaterial = new THREE.MeshStandardMaterial({ color: 0x2b3935, roughness: 0.74, metalness: 0.25 });
+    this.crateMaterial = new THREE.MeshStandardMaterial({ color: 0x463d2c, roughness: 0.87, metalness: 0.05 });
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(72, 72), this.floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.staticGroup.add(floor);
+    const grid = new THREE.GridHelper(70, 35, 0x31544c, 0x172c29);
+    grid.position.y = 0.014;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.25;
+    this.staticGroup.add(grid);
+
+    // Building shell. The north wall has one sealed quarantine doorway.
+    this.addBox({ x: -35, y: 2.5, z: 0, width: 0.8, height: 5, depth: 71, material: this.wallMaterial });
+    this.addBox({ x: 35, y: 2.5, z: 0, width: 0.8, height: 5, depth: 71, material: this.wallMaterial });
+    this.addBox({ x: 0, y: 2.5, z: 35, width: 71, height: 5, depth: 0.8, material: this.wallMaterial });
+    this.addBox({ x: -19.7, y: 2.5, z: -35, width: 30.6, height: 5, depth: 0.8, material: this.wallMaterial });
+    this.addBox({ x: 19.7, y: 2.5, z: -35, width: 30.6, height: 5, depth: 0.8, material: this.wallMaterial });
+
+    this.addRoom({ zone: ZONES.generatorA, open: 'east' });
+    this.addRoom({ zone: ZONES.generatorB, open: 'west' });
+    this.addRoom({ zone: ZONES.generatorC, open: 'east' });
+    this.addRoom({ zone: ZONES.security, open: 'west' });
+
+    // Centre lobby props create cover but leave clean walking lanes.
+    this.addBox({ x: -5.3, y: 0.72, z: 4, width: 2.3, height: 1.45, depth: 1.25, material: this.crateMaterial, collision: true });
+    this.addBox({ x: 6.2, y: 0.5, z: 7.1, width: 1.1, height: 1, depth: 1.1, material: this.crateMaterial, collision: true });
+    this.addBox({ x: 4.8, y: 0.36, z: 8.2, width: 0.72, height: 0.72, depth: 0.72, material: this.crateMaterial, collision: false });
+    const lobbySign = makeLabelSprite('SECTOR 07 / LOBBY', '#93d9bd', 1.05);
+    lobbySign.position.set(0, 4.3, 31.3);
+    this.staticGroup.add(lobbySign);
+
+    this.addFacilityLight(new THREE.Vector3(0, 4.4, 8), COLORS.aquaSoft, 1.7, 14);
+    this.addFacilityLight(new THREE.Vector3(0, 4.4, -11), COLORS.aquaSoft, 1.5, 14);
+    this.addFacilityLight(new THREE.Vector3(0, 4.4, -27), COLORS.red, 0.86, 11);
+
+    // Lockers are a gameplay hiding location and visual landmark.
+    this.lockers = [];
+    this.addLocker(-2.8, 16.7, Math.PI);
+    this.addLocker(8.4, -8.2, -Math.PI / 2);
+    this.addLocker(-9.5, -8.2, Math.PI / 2);
+
+    // Security terminal is a clue source, not a role reveal.
+    const terminalGroup = new THREE.Group();
+    terminalGroup.position.set(20.6, 0, 17.2);
+    const terminalBase = new THREE.Mesh(new THREE.BoxGeometry(1.25, 1.25, 0.8), this.propMaterial);
+    terminalBase.position.y = 0.65;
+    const terminalScreen = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.58, 0.08), new THREE.MeshStandardMaterial({ color: 0x111e1b, emissive: 0x195e49, emissiveIntensity: 1.35 }));
+    terminalScreen.position.set(0, 1.43, -0.42);
+    terminalGroup.add(terminalBase, terminalScreen);
+    this.staticGroup.add(terminalGroup);
+    this.terminal = { type: 'terminal', position: terminalGroup.position, group: terminalGroup, screen: terminalScreen };
+
+    this.buildExitDoor();
+    this.addExteriorDetails();
+  }
+
+  addLocker(x, z, rotation = 0) {
+    const group = new THREE.Group();
+    group.position.set(x, 0, z);
+    group.rotation.y = rotation;
+    const metal = new THREE.MeshStandardMaterial({ color: 0x30433f, roughness: 0.7, metalness: 0.5 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 3.5, 0.9), metal);
+    body.position.y = 1.75;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.64, 3.24, 0.05), new THREE.MeshStandardMaterial({ color: 0x39544e, roughness: 0.58, metalness: 0.42 }));
+    door.position.set(-0.36, 1.75, -0.48);
+    const door2 = door.clone();
+    door2.position.x = 0.36;
+    group.add(body, door, door2);
+    this.staticGroup.add(group);
+    this.staticColliders.push({ minX: x - 0.78, maxX: x + 0.78, minZ: z - 0.5, maxZ: z + 0.5 });
+    this.lockers.push({ type: 'locker', position: group.position, group });
+  }
+
+  buildExitDoor() {
+    const group = new THREE.Group();
+    group.position.set(0, 0, -34.55);
+    const metal = new THREE.MeshStandardMaterial({ color: 0x2d4641, metalness: 0.58, roughness: 0.48, emissive: 0x1e4438, emissiveIntensity: 0.35 });
+    const left = new THREE.Mesh(new THREE.BoxGeometry(3.65, 4.55, 0.48), metal);
+    const right = new THREE.Mesh(new THREE.BoxGeometry(3.65, 4.55, 0.48), metal.clone());
+    left.position.set(-1.83, 2.28, 0);
+    right.position.set(1.83, 2.28, 0);
+    left.castShadow = right.castShadow = true;
+    group.add(left, right);
+    const sign = makeLabelSprite('QUARANTINE EXIT', '#ff7b7e', 0.95);
+    sign.position.set(0, 4.8, 0.28);
+    group.add(sign);
+    const scanner = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.62, 0.15), new THREE.MeshStandardMaterial({ color: 0x1a2724, emissive: COLORS.red, emissiveIntensity: 1.4 }));
+    scanner.position.set(3.2, 1.5, 0.3);
+    group.add(scanner);
+    this.staticGroup.add(group);
+    this.exitDoor = { group, left, right, scanner };
+  }
+
+  addExteriorDetails() {
+    const pipeMaterial = new THREE.MeshStandardMaterial({ color: 0x26443d, roughness: 0.55, metalness: 0.75 });
+    for (const [x, z, length, rotation] of [[-31, -5, 18, 0], [31, 9, 14, 0], [0, 31, 14, Math.PI / 2]]) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, length, 8), pipeMaterial);
+      pipe.position.set(x, 4.55, z);
+      pipe.rotation.z = rotation || Math.PI / 2;
+      this.staticGroup.add(pipe);
+    }
+    const warningMaterial = new THREE.MeshBasicMaterial({ color: COLORS.red, transparent: true, opacity: 0.74 });
+    for (let i = 0; i < 8; i += 1) {
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), warningMaterial);
+      lamp.position.set(-31 + (i % 2) * 62, 3.8, -27 + Math.floor(i / 2) * 18);
+      this.staticGroup.add(lamp);
+    }
+  }
+
+  clearMatch() {
+    while (this.matchGroup.children.length) this.matchGroup.remove(this.matchGroup.children[0]);
+    while (this.fxGroup.children.length) this.fxGroup.remove(this.fxGroup.children[0]);
+    this.vfx = [];
+    this.generators = [];
+    this.bots = [];
+    this.pickups = [];
+    this.evidence = [];
+    this.keycard = null;
+    this.securityUnlocked = false;
+    this.keycardTaken = false;
+    this.exitOpen = false;
+    this.exitDoorOpen = 0;
+    this.blackoutUntil = 0;
+    this.fogSurgeUntil = 0;
+    this.eventLines = [];
+    dom.eventLog.innerHTML = '';
+  }
+
+  startMatch() {
+    this.clearMatch();
+    this.random = createSeededRandom((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0);
+    const assignment = assignHiddenKiller(this.random);
+    this.matchTime = 0;
+    this.nextEventAt = 22 + this.random() * 16;
+    this.phase = 'playing';
+    this.player = {
+      id: 'player',
+      name: 'YOU',
+      role: assignment.killerId === 'player' ? 'killer' : 'survivor',
+      position: new THREE.Vector3(0, 0, 17),
+      alive: true,
+      escaped: false,
+      health: 100,
+      stamina: 100,
+      held: null,
+      hidden: false,
+      interaction: null,
+      actionCooldown: 0,
+    };
+    this.yaw = Math.PI;
+    this.pitch = -0.07;
+    this.cameraShake = 0;
+    this.flashlightOn = true;
+    this.createMatchObjects(assignment.killerId);
+    this.updateRoleCard();
+    this.updateCamera();
+    this.scene.fog.density = 0.026;
+    this.ambientLight.intensity = 0.32;
+    this.keys.clear();
+
+    dom.intro.classList.add('hidden');
+    dom.accessibility.classList.add('hidden');
+    dom.pause.classList.add('hidden');
+    dom.result.classList.add('hidden');
+    dom.hud.classList.remove('hidden');
+    this.logEvent('Facility lock confirmed. Emergency protocol is live.', 'warning');
+    this.logEvent('No emergency meetings. No role reveals.', 'danger');
+    this.showSubtitle(this.player.role === 'killer' ? 'You are the killer. Make every death look accidental.' : 'You are a survivor. Restore power and escape alive.', 4200);
+    this.audio.start();
+    this.audio.cue('alarm');
+    this.requestPointerLock();
+  }
+
+  createMatchObjects(killerId) {
+    this.generators = [
+      this.createGenerator(ZONES.generatorA, 1),
+      this.createGenerator(ZONES.generatorB, 2),
+      this.createGenerator(ZONES.generatorC, 3),
+    ];
+    this.createKeycard();
+    this.createPickup('taser', new THREE.Vector3(8.5, 0, 10.5));
+    this.createPickup('pipe', new THREE.Vector3(-8.2, 0, 10.1));
+    this.createPickup('taser', new THREE.Vector3(-12.5, 0, -4.4));
+
+    const spawnPoints = [
+      new THREE.Vector3(-2.5, 0, 13.5), new THREE.Vector3(2.5, 0, 13.5), new THREE.Vector3(-6.5, 0, 11),
+      new THREE.Vector3(6.2, 0, 12), new THREE.Vector3(-1.2, 0, 8), new THREE.Vector3(4.1, 0, 4), new THREE.Vector3(-4.2, 0, 4),
+    ];
+    BOT_NAMES.forEach((name, index) => this.createBot(name, index, killerId === name ? 'killer' : 'survivor', spawnPoints[index]));
+  }
+
+  createGenerator(zone, index) {
+    const group = new THREE.Group();
+    group.position.copy(zone.position);
+    const chassis = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 1.02, 1.1, 10), new THREE.MeshStandardMaterial({ color: 0x273a36, roughness: 0.56, metalness: 0.66 }));
+    chassis.position.y = 0.55;
+    chassis.castShadow = true;
+    const coilMaterial = new THREE.MeshStandardMaterial({ color: 0x5d6958, emissive: 0x3a1808, emissiveIntensity: 0.55, roughness: 0.45, metalness: 0.5 });
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.12, 8, 16), coilMaterial);
+    coil.rotation.x = Math.PI / 2;
+    coil.position.y = 1.18;
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.33, 0.08), new THREE.MeshStandardMaterial({ color: 0x101b19, emissive: COLORS.red, emissiveIntensity: 1.8 }));
+    panel.position.set(0, 1.25, -0.85);
+    const cage = new THREE.Mesh(new THREE.CylinderGeometry(1.08, 1.08, 0.14, 10), new THREE.MeshStandardMaterial({ color: 0x35534c, roughness: 0.4, metalness: 0.6 }));
+    cage.position.y = 0.08;
+    group.add(chassis, coil, panel, cage);
+    const label = makeLabelSprite(`PWR-${String(index).padStart(2, '0')}`, '#e4bb62', 0.54);
+    label.position.set(0, 2.25, 0);
+    group.add(label);
+    this.matchGroup.add(group);
+    const light = new THREE.PointLight(COLORS.red, 0.58, 5.5, 2);
+    light.position.copy(zone.position).add(new THREE.Vector3(0, 1.4, 0));
+    this.scene.add(light);
+    const generator = {
+      type: 'generator', index, zone, position: group.position, group, panel, coil, light,
+      progress: 0, repaired: false, botWorkers: new Set(), lastSabotaged: -99,
+    };
+    this.updateGeneratorVisual(generator);
+    return generator;
+  }
+
+  createKeycard() {
+    const group = new THREE.Group();
+    group.position.set(23.1, 1.45, 19.2);
+    const card = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.05, 0.47), new THREE.MeshStandardMaterial({ color: 0x85e8bc, emissive: 0x3b9f75, emissiveIntensity: 1.3, roughness: 0.35, metalness: 0.32 }));
+    card.rotation.x = -0.12;
+    const glow = new THREE.PointLight(COLORS.aqua, 0.7, 3, 2);
+    group.add(card, glow);
+    const label = makeLabelSprite('EXIT KEYCARD', '#8dffcb', 0.46);
+    label.position.y = 0.48;
+    group.add(label);
+    group.visible = false;
+    this.matchGroup.add(group);
+    this.keycard = { type: 'keycard', position: group.position, group, card, active: false, taken: false, zone: ZONES.security };
+  }
+
+  createPickup(kind, position) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    let mesh;
+    if (kind === 'taser') {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.22, 0.62), new THREE.MeshStandardMaterial({ color: 0xf2b44d, emissive: 0x723a0b, emissiveIntensity: 0.7, roughness: 0.42, metalness: 0.42 }));
+      mesh.rotation.z = Math.PI / 2;
+    } else {
+      mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.15, 8), new THREE.MeshStandardMaterial({ color: 0x8b8b80, roughness: 0.45, metalness: 0.78 }));
+      mesh.rotation.z = Math.PI / 2;
+    }
+    mesh.position.y = 0.22;
+    mesh.castShadow = true;
+    const aura = new THREE.PointLight(kind === 'taser' ? COLORS.amber : 0xa8c4be, 0.5, 2.8, 2);
+    aura.position.y = 0.42;
+    group.add(mesh, aura);
+    this.matchGroup.add(group);
+    this.pickups.push({ type: 'pickup', kind, position: group.position, group, mesh, available: true });
+  }
+
+  createBot(name, index, role, position) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    const uniform = new THREE.MeshStandardMaterial({ color: COLORS.uniform, roughness: 0.73, metalness: 0.06 });
+    const accentColors = [0x77988b, 0x738c9b, 0x918d73, 0x858095, 0x758d81, 0x917b73, 0x698f8a];
+    const accent = new THREE.MeshStandardMaterial({ color: accentColors[index], roughness: 0.64 });
+    const skin = new THREE.MeshStandardMaterial({ color: COLORS.skin, roughness: 0.86 });
+    const legs = new THREE.Group();
+    const legGeometry = new THREE.BoxGeometry(0.22, 0.78, 0.25);
+    const leftLeg = new THREE.Mesh(legGeometry, uniform);
+    const rightLeg = new THREE.Mesh(legGeometry, uniform);
+    leftLeg.position.set(-0.16, 0.39, 0);
+    rightLeg.position.set(0.16, 0.39, 0);
+    legs.add(leftLeg, rightLeg);
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.75, 0.34), uniform);
+    torso.position.y = 1.12;
+    const harness = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.11, 0.37), accent);
+    harness.position.y = 1.18;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.255, 12, 10), skin);
+    head.position.y = 1.76;
+    const armGeometry = new THREE.BoxGeometry(0.15, 0.63, 0.16);
+    const leftArm = new THREE.Mesh(armGeometry, uniform);
+    const rightArm = new THREE.Mesh(armGeometry, uniform);
+    leftArm.position.set(-0.42, 1.13, 0);
+    rightArm.position.set(0.42, 1.13, 0);
+    const badge = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.17, 0.03), new THREE.MeshStandardMaterial({ color: 0xa7dbbb, emissive: 0x174f37, emissiveIntensity: 0.6 }));
+    badge.position.set(0.2, 1.28, -0.19);
+    [leftLeg, rightLeg, torso, harness, head, leftArm, rightArm, badge].forEach((part) => { part.castShadow = true; part.receiveShadow = true; });
+    group.add(legs, torso, harness, head, leftArm, rightArm, badge);
+    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.58, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.23, depthWrite: false }));
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.015;
+    group.add(shadow);
+    this.matchGroup.add(group);
+
+    const bot = {
+      id: name,
+      name,
+      role,
+      group,
+      position: group.position,
+      alive: true,
+      escaped: false,
+      state: 'wander',
+      goal: null,
+      goalUntil: 0,
+      routeEntered: false,
+      killCooldown: 0,
+      stunUntil: 0,
+      lastSeenCorpse: null,
+      leftArm,
+      rightArm,
+      legs,
+      walkPhase: this.random() * Math.PI * 2,
+      bodyHeight: 0,
+    };
+    return this.bots.push(bot), bot;
+  }
+
+  updateGeneratorVisual(generator) {
+    const energy = generator.repaired ? 1 : generator.progress;
+    const color = generator.repaired ? COLORS.aqua : generator.progress > 0 ? COLORS.amber : COLORS.red;
+    generator.panel.material.emissive.setHex(color);
+    generator.panel.material.emissiveIntensity = 1.15 + energy * 1.85;
+    generator.coil.material.emissive.setHex(generator.repaired ? 0x20734f : 0x3a1808);
+    generator.coil.material.emissiveIntensity = 0.4 + energy * 1.4;
+    generator.light.color.setHex(color);
+    generator.light.intensity = generator.repaired ? 1.25 : 0.22 + energy * 0.35;
+    generator.coil.rotation.z += 0.01 + energy * 0.035;
+  }
+
+  updateRoleCard() {
+    const killer = this.player.role === 'killer';
+    dom.roleCard.classList.toggle('killer', killer);
+    dom.roleCard.classList.toggle('survivor', !killer);
+    dom.roleTitle.textContent = killer ? 'KILLER' : 'SURVIVOR';
+    dom.roleCopy.textContent = killer
+      ? 'Blend in. Sabotage power. Eliminate every witness before anyone escapes.'
+      : 'Restore power. Find the keycard. Escape alive. Trust is not evidence.';
+  }
+
+  renderLoop() {
+    requestAnimationFrame(() => this.renderLoop());
+    const delta = Math.min(this.clock.getDelta(), 0.05);
+    if (this.phase === 'playing') this.update(delta);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  update(delta) {
+    this.matchTime += delta;
+    this.updatePlayer(delta);
+    this.updatePlayerInteraction(delta);
+    this.updateBots(delta);
+    this.updateEnvironment(delta);
+    this.updateEffects(delta);
+    this.updatePrompts();
+    this.updateHud();
+    this.drawMinimap();
+    this.checkMatchState();
+  }
+
+  updatePlayer(delta) {
+    if (!this.player.alive) return;
+    const movingInput = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD');
+    const sprinting = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && movingInput && this.player.stamina > 0.5 && !this.player.hidden;
+    const speed = sprinting ? 6.7 : 4.05;
+    if (sprinting) this.player.stamina = Math.max(0, this.player.stamina - 30 * delta);
+    else this.player.stamina = Math.min(100, this.player.stamina + 17 * delta);
+
+    if (!this.player.hidden && movingInput && !this.player.interaction) {
+      const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+      const right = new THREE.Vector3(-forward.z, 0, forward.x);
+      const direction = new THREE.Vector3();
+      if (this.keys.has('KeyW')) direction.add(forward);
+      if (this.keys.has('KeyS')) direction.sub(forward);
+      if (this.keys.has('KeyD')) direction.add(right);
+      if (this.keys.has('KeyA')) direction.sub(right);
+      if (direction.lengthSq() > 0) {
+        direction.normalize().multiplyScalar(speed * delta);
+        this.moveWithCollision(this.player.position, direction.x, direction.z, 0.42);
+      }
+    }
+    this.updateCamera();
+  }
+
+  updateCamera() {
+    const shake = this.settings.reducedMotion ? 0 : this.cameraShake;
+    this.camera.position.set(this.player.position.x, 1.63 + Math.sin(this.matchTime * 10) * shake * 0.04, this.player.position.z);
+    this.camera.rotation.set(this.pitch + Math.sin(this.matchTime * 17) * shake * 0.025, this.yaw + Math.cos(this.matchTime * 21) * shake * 0.018, 0);
+    this.cameraShake = Math.max(0, this.cameraShake - 1 / 28);
+    this.flashlight.intensity = this.flashlightOn && !this.player.hidden ? (this.blackoutUntil > this.matchTime ? 3.4 : 2.55) : 0;
+  }
+
+  collides(x, z, radius) {
+    if (x - radius < -34.35 || x + radius > 34.35 || z - radius < -34.35 || z + radius > 34.35) return true;
+    for (const collider of this.staticColliders) {
+      if (x + radius > collider.minX && x - radius < collider.maxX && z + radius > collider.minZ && z - radius < collider.maxZ) return true;
+    }
+    if (!this.exitOpen && x + radius > -3.7 && x - radius < 3.7 && z - radius < -34.05 && z + radius > -35.15) return true;
+    return false;
+  }
+
+  moveWithCollision(position, dx, dz, radius) {
+    const nextX = position.x + dx;
+    if (!this.collides(nextX, position.z, radius)) position.x = nextX;
+    const nextZ = position.z + dz;
+    if (!this.collides(position.x, nextZ, radius)) position.z = nextZ;
+  }
+
+  beginInteraction() {
+    if (this.player.hidden) {
+      const locker = this.lockers.find((entry) => vecDistance(entry.position, this.player.position) < 2.1);
+      if (locker) this.toggleLocker(locker);
+      return;
+    }
+    const target = this.getNearestInteractable();
+    if (!target) return;
+    const { type, ref } = target;
+    if (type === 'generator') {
+      if (ref.repaired && this.player.role === 'killer') {
+        this.player.interaction = { type: 'sabotage', ref, duration: 1.5, elapsed: 0 };
+        this.showSubtitle('Hold E to overload the power node.', 1100);
+      } else if (!ref.repaired) {
+        this.player.interaction = { type: 'repair', ref, duration: this.player.role === 'killer' ? 5.2 : 3.75, elapsed: 0 };
+        this.showSubtitle(this.player.role === 'killer' ? 'Hold E to pretend to repair the power node.' : 'Hold E to repair the power node.', 1100);
+      } else {
+        this.showSubtitle('The power node is online.', 1000);
+      }
+      return;
+    }
+    if (type === 'keycard') this.takeKeycard('YOU');
+    if (type === 'exit') this.useExit('YOU');
+    if (type === 'pickup') this.takePickup(ref);
+    if (type === 'evidence') this.inspectEvidence(ref);
+    if (type === 'terminal') this.inspectTerminal();
+    if (type === 'locker') this.toggleLocker(ref);
+  }
+
+  updatePlayerInteraction(delta) {
+    const interaction = this.player.interaction;
+    if (!interaction) return;
+    const closeEnough = vecDistance(this.player.position, interaction.ref.position) < 2.85;
+    if (!this.keys.has('KeyE') || !closeEnough) {
+      this.player.interaction = null;
+      return;
+    }
+    interaction.elapsed += delta;
+    if (interaction.type === 'repair') {
+      interaction.ref.progress = clamp(interaction.elapsed / interaction.duration, 0, 1);
+      this.updateGeneratorVisual(interaction.ref);
+      if (Math.floor(interaction.elapsed * 9) !== Math.floor((interaction.elapsed - delta) * 9)) this.audio.cue('repair');
+      if (interaction.ref.progress >= 1) {
+        this.completeGenerator(interaction.ref, 'YOU');
+        this.player.interaction = null;
+      }
+    } else if (interaction.type === 'sabotage' && interaction.elapsed >= interaction.duration) {
+      this.sabotageGenerator(interaction.ref, 'YOU');
+      this.player.interaction = null;
+    }
+  }
+
+  completeGenerator(generator, actor) {
+    if (generator.repaired) return;
+    generator.progress = 1;
+    generator.repaired = true;
+    this.updateGeneratorVisual(generator);
+    this.createPulse(generator.position, COLORS.aqua, 2.4);
+    this.audio.cue('complete');
+    this.logEvent(`PWR-${String(generator.index).padStart(2, '0')} comes online.`, 'normal');
+    this.showSubtitle(actor === 'YOU' ? 'Power node stabilized.' : 'A generator hums to life nearby.', 1800);
+    if (this.generators.every((node) => node.repaired) && !this.securityUnlocked) {
+      this.securityUnlocked = true;
+      this.keycard.active = true;
+      this.keycard.group.visible = true;
+      this.keycard.group.position.set(23.1, 1.45, 19.2);
+      this.logEvent('Security office unlocked: exit keycard available.', 'warning');
+      this.showSubtitle('Emergency power restored. The security office has unlocked.', 3200);
+      this.audio.cue('alarm');
+    }
+  }
+
+  sabotageGenerator(generator, actor) {
+    if (!generator.repaired || this.matchTime - generator.lastSabotaged < 8) return;
+    generator.repaired = false;
+    generator.progress = 0.12;
+    generator.lastSabotaged = this.matchTime;
+    this.updateGeneratorVisual(generator);
+    this.createEvidence(generator.position.clone().add(new THREE.Vector3(1.05, 0.02, 0.45)), 'tampered');
+    this.createPulse(generator.position, COLORS.red, 2.15);
+    this.audio.cue('sabotage');
+    this.logEvent('A power node has gone dark.', 'danger');
+    this.showSubtitle(actor === 'YOU' ? 'The overload looks like a system fault.' : 'Somewhere, a generator dies.', 2200);
+  }
+
+  takeKeycard(actor) {
+    if (!this.keycard?.active || this.keycard.taken) return;
+    this.keycard.taken = true;
+    this.keycardTaken = true;
+    this.keycard.group.visible = false;
+    this.audio.cue('pickup');
+    this.createPulse(this.keycard.position, COLORS.aqua, 1.7);
+    this.logEvent('Exit keycard removed from the security office.', 'warning');
+    this.showSubtitle(actor === 'YOU' ? 'Exit keycard acquired. Reach the quarantine door.' : 'A security lock clicks open somewhere in the facility.', 2600);
+  }
+
+  useExit(actor) {
+    if (this.player.role === 'killer' && actor === 'YOU') {
+      this.showSubtitle('The exit is not your objective. No witnesses can leave.', 1700);
+      return;
+    }
+    if (!this.keycardTaken) {
+      this.showSubtitle('QUARANTINE LOCK: exit keycard required.', 1500);
+      this.audio.cue('sabotage');
+      return;
+    }
+    if (!this.exitOpen) {
+      this.exitOpen = true;
+      this.audio.cue('alarm');
+      this.logEvent('Quarantine exit authorization accepted.', 'warning');
+      this.showSubtitle('The quarantine door is opening.', 1900);
+    }
+    if (actor === 'YOU') {
+      this.escapePlayer();
+    } else {
+      const bot = this.bots.find((entry) => entry.name === actor);
+      if (bot) this.escapeBot(bot);
+    }
+  }
+
+  takePickup(pickup) {
+    if (!pickup.available) return;
+    pickup.available = false;
+    pickup.group.visible = false;
+    this.player.held = pickup.kind;
+    this.audio.cue('pickup');
+    this.logEvent(`You took a ${pickup.kind === 'taser' ? 'taser' : 'metal pipe'}.`, 'warning');
+    this.showSubtitle(pickup.kind === 'pipe' ? 'A pipe can kill the wrong person. Choose carefully.' : 'One charge. It may buy you a few seconds.', 2500);
+  }
+
+  inspectEvidence(evidence) {
+    if (!evidence.inspected) {
+      evidence.inspected = true;
+      evidence.marker.material.opacity = 0.28;
+      this.audio.cue('evidence');
+    }
+    const observations = {
+      blood: 'Fresh blood. Someone did not leave alive.',
+      footprint: 'Boot prints cross old dust. They could have been planted.',
+      tampered: 'Tool marks are deliberate. The outage was not an accident.',
+      badge: 'An ID badge was dropped in a hurry. It proves nothing about who attacked.',
+    };
+    const clueType = evidence.evidenceType;
+    this.logEvent(`Evidence logged: ${clueType.toUpperCase()}.`, clueType === 'blood' ? 'danger' : 'normal');
+    this.showSubtitle(observations[clueType] || 'The evidence is incomplete.', 3100);
+  }
+
+  inspectTerminal() {
+    if (!this.securityUnlocked) {
+      this.showSubtitle('SECURITY FEED: no emergency power. Restore the generators first.', 2500);
+      return;
+    }
+    const lines = [
+      'SECURITY FEED: A figure entered Generator Wing. The timecode is corrupt.',
+      'SECURITY FEED: Movement detected near the lobby. Identity unresolved.',
+      'SECURITY FEED: The camera lost signal during the first outage.',
+    ];
+    this.terminal.screen.material.emissive.setHex(COLORS.amber);
+    this.terminal.screen.material.emissiveIntensity = 2.4;
+    this.audio.cue('evidence');
+    this.logEvent('You reviewed a corrupted security recording.', 'normal');
+    this.showSubtitle(randomFrom(this.random, lines), 4200);
+    window.setTimeout(() => {
+      if (this.terminal?.screen?.material) {
+        this.terminal.screen.material.emissive.setHex(0x195e49);
+        this.terminal.screen.material.emissiveIntensity = 1.35;
+      }
+    }, 1000);
+  }
+
+  toggleLocker(locker) {
+    this.player.hidden = !this.player.hidden;
+    if (this.player.hidden) {
+      this.player.interaction = null;
+      this.flashlightOn = false;
+      this.showSubtitle('You hold your breath inside the locker. Press E to leave.', 2400);
+      this.logEvent('You are hidden. Movement and light are disabled.', 'normal');
+    } else {
+      this.showSubtitle('You step back into the facility.', 1300);
+    }
+    this.audio.cue(this.player.hidden ? 'sabotage' : 'pickup');
+  }
+
+  getNearestInteractable() {
+    if (!this.player.alive) return null;
+    const choices = [];
+    for (const generator of this.generators) {
+      const distance = vecDistance(this.player.position, generator.position);
+      if (distance < 2.55) choices.push({ type: 'generator', ref: generator, distance });
+    }
+    if (this.keycard?.active && !this.keycard.taken) {
+      const distance = vecDistance(this.player.position, this.keycard.position);
+      if (distance < 2.2) choices.push({ type: 'keycard', ref: this.keycard, distance });
+    }
+    const exitDistance = vecDistance(this.player.position, ZONES.exit.position);
+    if (exitDistance < 4.5) choices.push({ type: 'exit', ref: ZONES.exit, distance: exitDistance });
+    for (const pickup of this.pickups) {
+      if (!pickup.available) continue;
+      const distance = vecDistance(this.player.position, pickup.position);
+      if (distance < 1.8) choices.push({ type: 'pickup', ref: pickup, distance });
+    }
+    for (const evidence of this.evidence) {
+      if (evidence.inspected) continue;
+      const distance = vecDistance(this.player.position, evidence.position);
+      if (distance < 1.65) choices.push({ type: 'evidence', ref: evidence, distance });
+    }
+    const terminalDistance = vecDistance(this.player.position, this.terminal.position);
+    if (terminalDistance < 2.1) choices.push({ type: 'terminal', ref: this.terminal, distance: terminalDistance });
+    for (const locker of this.lockers) {
+      const distance = vecDistance(this.player.position, locker.position);
+      if (distance < 1.75) choices.push({ type: 'locker', ref: locker, distance });
+    }
+    choices.sort((a, b) => a.distance - b.distance);
+    return choices[0] || null;
+  }
+
+  interactionLabel(target) {
+    if (!target) return null;
+    const { type, ref } = target;
+    if (type === 'generator') {
+      if (ref.repaired && this.player.role === 'killer') return 'HOLD E — SABOTAGE POWER NODE';
+      if (ref.repaired) return 'POWER NODE ONLINE';
+      return this.player.role === 'killer' ? 'HOLD E — PRETEND TO REPAIR' : 'HOLD E — REPAIR POWER NODE';
+    }
+    if (type === 'keycard') return 'E — TAKE EXIT KEYCARD';
+    if (type === 'exit') return this.keycardTaken ? 'E — OPEN EXIT / ESCAPE' : 'EXIT LOCKED — KEYCARD REQUIRED';
+    if (type === 'pickup') return `E — TAKE ${ref.kind.toUpperCase()}`;
+    if (type === 'evidence') return 'E — INVESTIGATE EVIDENCE';
+    if (type === 'terminal') return 'E — REVIEW SECURITY FEED';
+    if (type === 'locker') return 'E — HIDE IN LOCKER';
+    return null;
+  }
+
+  useAction() {
+    if (this.phase !== 'playing' || this.player.actionCooldown > this.matchTime || !this.player.alive || this.player.hidden) return;
+    const nearest = this.getNearestBot(2.15);
+    if (!nearest) {
+      this.showSubtitle(this.player.role === 'killer' ? 'No one is close enough.' : 'No target in reach.', 850);
+      return;
+    }
+    if (this.player.role === 'killer') {
+      this.player.actionCooldown = this.matchTime + 1.05;
+      this.killBot(nearest, 'YOU');
+      return;
+    }
+    if (!this.player.held) {
+      this.showSubtitle('You have nothing to defend yourself with.', 1100);
+      return;
+    }
+    if (this.player.held === 'taser') {
+      this.player.held = null;
+      this.player.actionCooldown = this.matchTime + 0.8;
+      nearest.stunUntil = this.matchTime + (nearest.role === 'killer' ? 10 : 5.5);
+      this.createPulse(nearest.position, COLORS.amber, 1.6);
+      this.audio.cue('taser');
+      if (nearest.role === 'killer') {
+        this.logEvent('Your taser connects. The figure collapses—but is still alive.', 'warning');
+        this.showSubtitle('The attacker spasms. Run before they recover.', 2600);
+      } else {
+        this.logEvent(`${nearest.name} is stunned. They may have been innocent.`, 'warning');
+        this.showSubtitle('They are alive. A taser reveals nothing.', 1800);
+      }
+      return;
+    }
+    if (this.player.held === 'pipe') {
+      this.player.held = null;
+      this.player.actionCooldown = this.matchTime + 1;
+      this.audio.cue('attack');
+      if (nearest.role === 'killer') {
+        nearest.stunUntil = this.matchTime + 14;
+        this.createPulse(nearest.position, COLORS.amber, 2.2);
+        this.showSubtitle('The blow drops them—for now. Get to the exit.', 2600);
+        this.logEvent('You knocked an attacker down. Their identity is still unconfirmed.', 'warning');
+      } else {
+        this.killBot(nearest, 'YOU');
+        window.setTimeout(() => this.endMatch(false, 'You killed an innocent survivor. The blacksite takes you too.', 'innocent-killed'), 220);
+      }
+    }
+  }
+
+  getNearestBot(maxDistance) {
+    let closest = null;
+    let closestDistance = maxDistance;
+    for (const bot of this.bots) {
+      if (!bot.alive || bot.escaped) continue;
+      const distance = vecDistance(this.player.position, bot.position);
+      if (distance < closestDistance) {
+        closest = bot;
+        closestDistance = distance;
+      }
+    }
+    return closest;
+  }
+
+  updateBots(delta) {
+    for (const bot of this.bots) {
+      if (!bot.alive || bot.escaped) continue;
+      if (bot.stunUntil > this.matchTime) {
+        this.animateBot(bot, delta, false, true);
+        continue;
+      }
+      if (bot.role === 'killer' && this.matchTime > 16) this.updateKillerBot(bot, delta);
+      else this.updateSurvivorBot(bot, delta, bot.role === 'killer');
+      this.observeCorpse(bot);
+    }
+  }
+
+  updateSurvivorBot(bot, delta, pretending = false) {
+    if (!bot.goal || bot.goalUntil < this.matchTime || !this.isGoalValid(bot.goal)) this.chooseSurvivorGoal(bot, pretending);
+    if (!bot.goal) return;
+    const goalPosition = this.botMovementTarget(bot);
+    const arrived = this.moveBotToward(bot, goalPosition, delta, 2.3 + this.random() * 0.32);
+    if (!arrived) return;
+    if (!bot.routeEntered && bot.goal.access) {
+      bot.routeEntered = true;
+      return;
+    }
+    if (bot.goal.type === 'generator') {
+      const generator = bot.goal.ref;
+      if (!generator.repaired) {
+        generator.progress = clamp(generator.progress + delta * (pretending ? 0.017 : 0.031), 0, 1);
+        this.updateGeneratorVisual(generator);
+        if (generator.progress >= 1) this.completeGenerator(generator, bot.name);
+      }
+    } else if (bot.goal.type === 'keycard') {
+      this.takeKeycard(bot.name);
+      bot.goal = null;
+    } else if (bot.goal.type === 'exit') {
+      this.useExit(bot.name);
+    } else if (bot.goal.type === 'wander') {
+      bot.goal = null;
+    }
+    this.animateBot(bot, delta, true, false);
+  }
+
+  chooseSurvivorGoal(bot, pretending = false) {
+    bot.routeEntered = false;
+    bot.goalUntil = this.matchTime + 4.8 + this.random() * 5.5;
+    if (!this.securityUnlocked) {
+      const offline = this.generators.filter((node) => !node.repaired);
+      if (offline.length && this.random() < 0.8) {
+        offline.sort((a, b) => vecDistance(bot.position, a.position) - vecDistance(bot.position, b.position));
+        const choice = this.random() < 0.62 ? offline[0] : randomFrom(this.random, offline);
+        bot.goal = { type: 'generator', ref: choice, position: choice.position, access: choice.zone.access };
+        return;
+      }
+    } else if (!this.keycardTaken && !pretending) {
+      bot.goal = { type: 'keycard', ref: this.keycard, position: this.keycard.position, access: ZONES.security.access };
+      return;
+    } else if (this.keycardTaken && !pretending) {
+      bot.goal = { type: 'exit', ref: ZONES.exit, position: ZONES.exit.position, access: ZONES.exit.access };
+      return;
+    }
+    const wandering = [ZONES.lobby, ZONES.generatorA, ZONES.generatorB, ZONES.generatorC];
+    const choice = randomFrom(this.random, wandering);
+    bot.goal = { type: 'wander', ref: choice, position: choice.access, access: null };
+  }
+
+  isGoalValid(goal) {
+    if (goal.type === 'generator') return !goal.ref.repaired;
+    if (goal.type === 'keycard') return !this.keycardTaken && this.keycard.active;
+    if (goal.type === 'exit') return this.keycardTaken;
+    return true;
+  }
+
+  botMovementTarget(bot) {
+    if (bot.goal.access && !bot.routeEntered) return bot.goal.access;
+    return bot.goal.position;
+  }
+
+  moveBotToward(bot, target, delta, speed) {
+    const dx = target.x - bot.position.x;
+    const dz = target.z - bot.position.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < 0.72) {
+      this.animateBot(bot, delta, false, false);
+      return true;
+    }
+    const amount = Math.min(speed * delta, distance);
+    const moveX = (dx / distance) * amount;
+    const moveZ = (dz / distance) * amount;
+    const previousX = bot.position.x;
+    const previousZ = bot.position.z;
+    this.moveWithCollision(bot.position, moveX, moveZ, 0.34);
+    if (Math.abs(bot.position.x - previousX) + Math.abs(bot.position.z - previousZ) < 0.005) {
+      // A simple sidestep keeps AI from staring at a wall if another character has crowded an entrance.
+      const angle = Math.atan2(dz, dx) + (this.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+      this.moveWithCollision(bot.position, Math.cos(angle) * amount * 0.7, Math.sin(angle) * amount * 0.7, 0.34);
+    }
+    const desiredRotation = Math.atan2(dx, dz);
+    bot.group.rotation.y = lerpAngle(bot.group.rotation.y, desiredRotation, delta * 7);
+    this.animateBot(bot, delta, true, false);
+    return false;
+  }
+
+  animateBot(bot, delta, walking, stunned) {
+    bot.walkPhase += delta * (walking ? 10 : 2.5);
+    const swing = walking ? Math.sin(bot.walkPhase) * 0.52 : Math.sin(bot.walkPhase) * 0.05;
+    bot.leftArm.rotation.x = swing;
+    bot.rightArm.rotation.x = -swing;
+    if (stunned) {
+      bot.group.rotation.z = Math.sin(this.matchTime * 14) * 0.08;
+      bot.group.position.y = 0.02;
+    } else {
+      bot.group.rotation.z *= 0.85;
+      bot.group.position.y = walking ? Math.abs(Math.sin(bot.walkPhase)) * 0.035 : 0;
+    }
+  }
+
+  updateKillerBot(killer, delta) {
+    if (!killer.goal || killer.goalUntil < this.matchTime || !this.isKillerGoalValid(killer.goal)) this.chooseKillerGoal(killer);
+    if (!killer.goal) return;
+    if (killer.goal.type === 'sabotage') {
+      const arrived = this.moveBotToward(killer, this.botMovementTarget(killer), delta, 3.35);
+      if (arrived) {
+        killer.routeEntered = true;
+        if (vecDistance(killer.position, killer.goal.ref.position) < 2.2) {
+          this.sabotageGenerator(killer.goal.ref, killer.name);
+          killer.goal = null;
+        }
+      }
+      return;
+    }
+    const target = killer.goal.ref;
+    if (!target || !target.alive || target.escaped || (target.id === 'player' && target.hidden)) {
+      killer.goal = null;
+      return;
+    }
+    this.moveBotToward(killer, target.position, delta, 3.55 + this.random() * 0.45);
+    const attackDistance = vecDistance(killer.position, target.position);
+    if (attackDistance < 1.45 && killer.killCooldown < this.matchTime) {
+      killer.killCooldown = this.matchTime + 11 + this.random() * 6;
+      if (target.id === 'player') this.damagePlayer(54, killer);
+      else this.killBot(target, killer.name);
+      killer.goal = null;
+    }
+  }
+
+  isKillerGoalValid(goal) {
+    if (goal.type === 'sabotage') return goal.ref.repaired && this.matchTime - goal.ref.lastSabotaged > 8;
+    return goal.ref?.alive && !goal.ref.escaped;
+  }
+
+  chooseKillerGoal(killer) {
+    killer.routeEntered = false;
+    killer.goalUntil = this.matchTime + 3.4 + this.random() * 3.3;
+    const sabotageCandidates = this.generators.filter((node) => node.repaired && this.matchTime - node.lastSabotaged > 13);
+    if (sabotageCandidates.length && this.random() < 0.24 && !this.keycardTaken) {
+      const generator = randomFrom(this.random, sabotageCandidates);
+      killer.goal = { type: 'sabotage', ref: generator, position: generator.position, access: generator.zone.access };
+      return;
+    }
+    const targets = this.getSurvivorActors().filter((actor) => actor.id !== killer.id && !(actor.id === 'player' && actor.hidden));
+    if (!targets.length) {
+      killer.goal = null;
+      return;
+    }
+    // Prefer an isolated person, but keep a little uncertainty so each incident feels different.
+    targets.sort((a, b) => this.targetDangerScore(b, killer) - this.targetDangerScore(a, killer));
+    const selected = this.random() < 0.72 ? targets[0] : randomFrom(this.random, targets);
+    killer.goal = { type: 'hunt', ref: selected, position: selected.position, access: null };
+  }
+
+  targetDangerScore(target, killer) {
+    const otherSurvivors = this.getSurvivorActors().filter((candidate) => candidate.id !== target.id);
+    const nearestFriend = otherSurvivors.reduce((nearest, candidate) => Math.min(nearest, vecDistance(target.position, candidate.position)), 999);
+    return nearestFriend * 1.8 - vecDistance(target.position, killer.position) * 0.18 + this.random() * 2;
+  }
+
+  getSurvivorActors() {
+    const actors = this.bots.filter((bot) => bot.role === 'survivor' && bot.alive && !bot.escaped);
+    if (this.player.role === 'survivor' && this.player.alive && !this.player.escaped) actors.push(this.player);
+    return actors;
+  }
+
+  observeCorpse(bot) {
+    if (bot.lastSeenCorpse && this.matchTime - bot.lastSeenCorpse.time < 10) return;
+    const corpse = this.bots.find((candidate) => !candidate.alive && !candidate.escaped && vecDistance(candidate.position, bot.position) < 5.1);
+    if (!corpse) return;
+    bot.lastSeenCorpse = { id: corpse.id, time: this.matchTime };
+    bot.goal = { type: 'wander', ref: ZONES.lobby, position: ZONES.lobby.position.clone().add(new THREE.Vector3((this.random() - 0.5) * 10, 0, (this.random() - 0.5) * 7)), access: null };
+    bot.goalUntil = this.matchTime + 5;
+    this.logEvent('Footsteps break into a panicked run.', 'danger');
+    this.showSubtitle('You hear someone running through the facility.', 1700);
+  }
+
+  killBot(bot, attacker) {
+    if (!bot?.alive || bot.escaped) return;
+    bot.alive = false;
+    bot.state = 'dead';
+    bot.group.position.y = 0.17;
+    bot.group.rotation.z = attacker === 'YOU' ? -1.18 : (this.random() < 0.5 ? 1.15 : -1.15);
+    bot.leftArm.rotation.x = -1.3;
+    bot.rightArm.rotation.x = 0.9;
+    this.createEvidence(bot.position.clone().add(new THREE.Vector3(0.25, 0.02, 0.1)), 'blood');
+    this.createEvidence(bot.position.clone().add(new THREE.Vector3(-0.65, 0.02, 0.48)), 'footprint');
+    if (this.random() < 0.75) this.createEvidence(bot.position.clone().add(new THREE.Vector3(0.5, 0.02, -0.52)), 'badge');
+    this.createPulse(bot.position, COLORS.red, 2.1);
+    this.audio.cue('attack');
+    this.logEvent(attacker === 'YOU' ? 'A body hits the floor.' : 'A scream ends abruptly somewhere nearby.', 'danger');
+    this.showSubtitle(attacker === 'YOU' ? 'One less witness.' : 'Something terrible just happened.', 2100);
+    this.checkMatchState();
+  }
+
+  damagePlayer(amount, attacker) {
+    if (!this.player.alive) return;
+    this.player.health -= amount;
+    this.cameraShake = this.settings.reducedMotion ? 0 : 1;
+    dom.damageFlash.classList.add('active');
+    window.setTimeout(() => dom.damageFlash.classList.remove('active'), 130);
+    this.audio.cue('hurt');
+    this.createPulse(this.player.position, COLORS.red, 1.7);
+    this.showSubtitle('Something strikes from the dark. Get away!', 1900);
+    this.logEvent('You were attacked. The attacker did not reveal themselves.', 'danger');
+    if (this.player.health <= 0) {
+      this.player.health = 0;
+      this.player.alive = false;
+      this.endMatch(false, 'The killer found you before the facility let you go.', 'killed');
+    } else if (attacker) {
+      attacker.goalUntil = this.matchTime + 4.5;
+    }
+  }
+
+  escapePlayer() {
+    if (this.player.role === 'killer') return;
+    this.player.escaped = true;
+    this.player.alive = false;
+    this.audio.cue('escape');
+    this.endMatch(true, 'Cold air hits your face as the quarantine door seals behind you. The blacksite keeps its secrets.', 'escaped');
+  }
+
+  escapeBot(bot) {
+    if (!bot.alive || bot.escaped) return;
+    bot.escaped = true;
+    bot.alive = false;
+    bot.group.visible = false;
+    this.logEvent(`${bot.name} disappeared through the quarantine exit.`, 'warning');
+    this.audio.cue('escape');
+    if (this.player.role === 'killer') {
+      this.endMatch(false, `${bot.name} escaped. The witnesses are no longer contained.`, 'witness-escaped');
+    } else {
+      this.showSubtitle(`${bot.name} made it out. The door remains open—run.`, 2200);
+    }
+  }
+
+  createEvidence(position, type) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    let marker;
+    if (type === 'blood') {
+      marker = new THREE.Mesh(new THREE.CircleGeometry(0.62, 18), new THREE.MeshBasicMaterial({ color: COLORS.redDark, transparent: true, opacity: 0.76, depthWrite: false }));
+      marker.rotation.x = -Math.PI / 2;
+      marker.position.y = 0.022;
+      group.add(marker);
+      const splatter = new THREE.Mesh(new THREE.CircleGeometry(0.17, 10), marker.material.clone());
+      splatter.position.set(0.64, 0.023, 0.2);
+      splatter.rotation.x = -Math.PI / 2;
+      group.add(splatter);
+    } else if (type === 'footprint') {
+      marker = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.02, 0.48), new THREE.MeshBasicMaterial({ color: 0x5e3026, transparent: true, opacity: 0.74, depthWrite: false }));
+      marker.position.y = 0.02;
+      marker.rotation.y = this.random() * Math.PI;
+      group.add(marker);
+      const second = marker.clone();
+      second.position.set(0.22, 0, -0.38);
+      group.add(second);
+    } else if (type === 'tampered') {
+      marker = new THREE.Mesh(new THREE.TorusGeometry(0.37, 0.06, 6, 14), new THREE.MeshBasicMaterial({ color: COLORS.amber, transparent: true, opacity: 0.75, depthWrite: false }));
+      marker.rotation.x = Math.PI / 2;
+      marker.position.y = 0.035;
+      group.add(marker);
+    } else {
+      marker = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.45), new THREE.MeshBasicMaterial({ color: 0x9bdfc1, transparent: true, opacity: 0.82, depthWrite: false }));
+      marker.position.y = 0.025;
+      marker.rotation.y = this.random() * Math.PI;
+      group.add(marker);
+    }
+    this.matchGroup.add(group);
+    this.evidence.push({ type: 'evidence', evidenceType: type, position: group.position, group, marker, inspected: false });
+  }
+
+  createPulse(position, color, size = 1.6) {
+    const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false });
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(0.12, 0.18, 18), material);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.copy(position);
+    mesh.position.y = 0.05;
+    this.fxGroup.add(mesh);
+    this.vfx.push({ mesh, material, age: 0, duration: 0.62, size });
+  }
+
+  updateEffects(delta) {
+    for (let i = this.vfx.length - 1; i >= 0; i -= 1) {
+      const effect = this.vfx[i];
+      effect.age += delta;
+      const progress = effect.age / effect.duration;
+      effect.mesh.scale.setScalar(1 + progress * effect.size * 2.2);
+      effect.material.opacity = (1 - progress) * 0.5;
+      if (progress >= 1) {
+        this.fxGroup.remove(effect.mesh);
+        this.vfx.splice(i, 1);
+      }
+    }
+  }
+
+  updateEnvironment(delta) {
+    if (this.matchTime >= this.nextEventAt) {
+      this.triggerEnvironmentalEvent();
+      this.nextEventAt = this.matchTime + 25 + this.random() * 22;
+    }
+    const blackout = this.blackoutUntil > this.matchTime;
+    const foggy = this.fogSurgeUntil > this.matchTime;
+    this.scene.fog.density += ((foggy ? 0.055 : 0.026) - this.scene.fog.density) * Math.min(1, delta * 1.6);
+    this.ambientLight.intensity += ((blackout ? 0.09 : 0.32) - this.ambientLight.intensity) * Math.min(1, delta * 3);
+    for (const entry of this.lights) {
+      const flicker = Math.sin(this.matchTime * 17 + entry.phase) > 0.92 ? 0.25 : 1;
+      const target = blackout ? entry.base * 0.08 : entry.base * flicker;
+      entry.light.intensity += (target - entry.light.intensity) * Math.min(1, delta * 10);
+    }
+    const openingTarget = this.exitOpen ? 1 : 0;
+    this.exitDoorOpen += (openingTarget - this.exitDoorOpen) * Math.min(1, delta * 2.1);
+    this.exitDoor.left.position.x = -1.83 - this.exitDoorOpen * 2.25;
+    this.exitDoor.right.position.x = 1.83 + this.exitDoorOpen * 2.25;
+    this.exitDoor.scanner.material.emissive.setHex(this.exitOpen ? COLORS.aqua : COLORS.red);
+    this.exitDoor.scanner.material.emissiveIntensity = this.exitOpen ? 2.6 : 1.4;
+
+    for (const pickup of this.pickups) {
+      if (!pickup.available) continue;
+      pickup.group.position.y = Math.sin(this.matchTime * 2.4 + pickup.position.x) * 0.06;
+      pickup.mesh.rotation.y += delta * 1.3;
+    }
+    if (this.keycard?.active && !this.keycard.taken) {
+      this.keycard.card.rotation.y += delta * 1.4;
+      this.keycard.group.position.y = 1.43 + Math.sin(this.matchTime * 2.1) * 0.06;
+    }
+  }
+
+  triggerEnvironmentalEvent() {
+    const type = pickEnvironmentalEvent(this.random);
+    if (type === 'blackout') {
+      this.blackoutUntil = this.matchTime + 7;
+      this.logEvent('GRID FAILURE: emergency lights engaged.', 'danger');
+      this.showSubtitle('The facility goes black. Your flashlight is all you have.', 3200);
+      this.audio.cue('alarm');
+    } else if (type === 'fog') {
+      this.fogSurgeUntil = this.matchTime + 12;
+      this.logEvent('Ventilation failure: dense fog in all wings.', 'warning');
+      this.showSubtitle('Cold fog spills through the corridors.', 2600);
+      this.audio.cue('sabotage');
+    } else if (type === 'alarm') {
+      this.logEvent('Movement alarm: source unresolved.', 'danger');
+      this.showSubtitle('An alarm screams from another sector.', 2200);
+      this.audio.cue('alarm');
+    } else {
+      this.logEvent('Radio interference detected.', 'normal');
+      this.showSubtitle('RADIO: ...don’t let them see you...', 2600);
+      this.audio.cue('evidence');
+    }
+  }
+
+  updatePrompts() {
+    if (this.player.hidden) {
+      dom.interaction.classList.remove('hidden');
+      dom.interactionText.textContent = 'E — LEAVE LOCKER';
+    } else if (this.player.interaction) {
+      const { type, elapsed, duration } = this.player.interaction;
+      const amount = Math.floor((elapsed / duration) * 100);
+      dom.interaction.classList.remove('hidden');
+      dom.interactionText.textContent = `${type === 'sabotage' ? 'OVERLOADING' : 'REPAIRING'} ${amount}% — HOLD E`;
+    } else {
+      const target = this.getNearestInteractable();
+      const label = this.interactionLabel(target);
+      if (label) {
+        dom.interaction.classList.remove('hidden');
+        dom.interactionText.textContent = label;
+      } else dom.interaction.classList.add('hidden');
+    }
+    let action = null;
+    if (this.player.role === 'killer') action = 'F — STRIKE';
+    else if (this.player.held === 'taser') action = 'F — FIRE TASER';
+    else if (this.player.held === 'pipe') action = 'F — SWING PIPE (LETHAL)';
+    if (action && !this.player.hidden) {
+      dom.action.classList.remove('hidden');
+      dom.actionText.textContent = action;
+    } else dom.action.classList.add('hidden');
+  }
+
+  updateHud() {
+    dom.matchClock.textContent = formatClock(this.matchTime);
+    const alive = getAliveCount(this.player, this.bots);
+    dom.aliveCount.textContent = `${alive} / 8`;
+    dom.healthFill.style.width = `${this.player.health}%`;
+    dom.healthValue.textContent = Math.ceil(this.player.health);
+    dom.staminaFill.style.width = `${this.player.stamina}%`;
+    dom.heldItem.textContent = this.player.held ? this.player.held.toUpperCase() : 'EMPTY';
+    const state = getObjectiveState({
+      playerRole: this.player.role,
+      generators: this.generators,
+      powerRestored: this.securityUnlocked,
+      keycardTaken: this.keycardTaken,
+      exitOpen: this.exitOpen,
+      survivorsRemaining: getSurvivorCount(this.player, this.bots),
+    });
+    dom.objectiveTitle.textContent = state.title;
+    dom.objectiveCopy.textContent = state.copy;
+    dom.objectiveFill.style.width = `${clamp(state.progress, 0, 1) * 100}%`;
+  }
+
+  logEvent(text, type = 'normal') {
+    if (this.phase === 'menu') return;
+    const line = document.createElement('div');
+    line.className = `event-line ${type === 'normal' ? '' : type}`;
+    const time = document.createElement('time');
+    time.textContent = formatClock(this.matchTime);
+    const copy = document.createElement('span');
+    copy.textContent = text;
+    line.append(time, copy);
+    dom.eventLog.prepend(line);
+    this.eventLines.unshift(line);
+    while (this.eventLines.length > 4) this.eventLines.pop().remove();
+  }
+
+  showSubtitle(text, duration = 2200) {
+    dom.subtitle.textContent = text;
+    dom.subtitle.classList.add('visible');
+    if (this.subtitleTimer) window.clearTimeout(this.subtitleTimer);
+    this.subtitleTimer = window.setTimeout(() => dom.subtitle.classList.remove('visible'), duration);
+  }
+
+  drawMinimap() {
+    const canvas = dom.minimap;
+    const context = canvas.getContext('2d');
+    const width = canvas.width;
+    const center = width / 2;
+    const scale = 2.15;
+    context.clearRect(0, 0, width, width);
+    context.save();
+    context.beginPath();
+    context.arc(center, center, center - 4, 0, Math.PI * 2);
+    context.clip();
+    context.fillStyle = 'rgba(4, 18, 19, .92)';
+    context.fillRect(0, 0, width, width);
+    context.strokeStyle = 'rgba(118, 255, 195, .17)';
+    context.lineWidth = 1;
+    for (let x = -30; x <= 30; x += 10) {
+      context.beginPath(); context.moveTo(center + x * scale, 0); context.lineTo(center + x * scale, width); context.stroke();
+      context.beginPath(); context.moveTo(0, center + x * scale); context.lineTo(width, center + x * scale); context.stroke();
+    }
+    context.strokeStyle = 'rgba(164, 245, 202, .54)';
+    context.strokeRect(center - 34 * scale, center - 34 * scale, 68 * scale, 68 * scale);
+    const roomOutline = (x, z) => context.strokeRect(center + (x - 6) * scale, center + (z - 6) * scale, 12 * scale, 12 * scale);
+    context.strokeStyle = 'rgba(117, 201, 166, .42)';
+    roomOutline(-23, -20); roomOutline(23, -20); roomOutline(-23, 20); roomOutline(23, 20);
+    for (const generator of this.generators) {
+      context.fillStyle = generator.repaired ? '#79ffca' : '#efb64a';
+      context.fillRect(center + generator.position.x * scale - 2, center + generator.position.z * scale - 2, 4, 4);
+    }
+    for (const evidence of this.evidence) {
+      if (!evidence.inspected) continue;
+      context.fillStyle = 'rgba(252, 76, 80, .8)';
+      context.fillRect(center + evidence.position.x * scale - 1, center + evidence.position.z * scale - 1, 2, 2);
+    }
+    for (const bot of this.bots) {
+      if (!bot.alive || bot.escaped || vecDistance(bot.position, this.player.position) > 23) continue;
+      context.fillStyle = bot.stunUntil > this.matchTime ? '#f7bd4e' : '#b6c9c0';
+      context.beginPath();
+      context.arc(center + bot.position.x * scale, center + bot.position.z * scale, 2.5, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.save();
+    context.translate(center + this.player.position.x * scale, center + this.player.position.z * scale);
+    context.rotate(-this.yaw);
+    context.fillStyle = this.player.role === 'killer' ? '#ff666a' : '#80ffc8';
+    context.beginPath();
+    context.moveTo(0, -5.2); context.lineTo(3.9, 4); context.lineTo(-3.9, 4); context.closePath(); context.fill();
+    context.restore();
+    context.restore();
+    context.strokeStyle = 'rgba(160,255,205,.45)';
+    context.beginPath(); context.arc(center, center, center - 3, 0, Math.PI * 2); context.stroke();
+  }
+
+  checkMatchState() {
+    if (this.phase !== 'playing') return;
+    if (this.player.role === 'killer') {
+      const survivors = getSurvivorCount(this.player, this.bots);
+      if (survivors === 0) this.endMatch(true, 'The facility is silent. No witness remains to tell the story.', 'killer-win');
+    }
+  }
+
+  endMatch(won, copy, reason) {
+    if (this.phase === 'ended') return;
+    this.phase = 'ended';
+    this.keys.clear();
+    if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
+    dom.hud.classList.add('hidden');
+    dom.pause.classList.add('hidden');
+    dom.result.classList.remove('hidden');
+    dom.result.classList.toggle('lost', !won);
+    const killerResult = this.player.role === 'killer';
+    dom.resultKicker.textContent = won ? 'INCIDENT REPORT // OUTCOME CONFIRMED' : 'INCIDENT REPORT // CONTAINMENT FAILED';
+    dom.resultHeading.textContent = won ? (killerResult ? 'NO WITNESSES' : 'YOU ESCAPED') : (reason === 'innocent-killed' ? 'WRONG PERSON' : 'BLACKSITE CLAIMED YOU');
+    dom.resultCopy.textContent = copy;
+    const alive = getAliveCount(this.player, this.bots);
+    const bodies = this.bots.filter((bot) => !bot.alive && !bot.escaped).length;
+    dom.reportGrid.innerHTML = '';
+    const report = [
+      [formatClock(this.matchTime), 'INCIDENT TIME'],
+      [this.player.role.toUpperCase(), 'YOUR ROLE'],
+      [`${alive}/8`, 'STILL PRESENT'],
+      [String(bodies), 'BODIES FOUND'],
+      [String(this.evidence.filter((item) => item.inspected).length), 'CLUES LOGGED'],
+      [won ? 'SURVIVED' : 'LOST', 'STATUS'],
+    ];
+    for (const [value, label] of report) {
+      const cell = document.createElement('div');
+      const strong = document.createElement('b');
+      const span = document.createElement('span');
+      strong.textContent = value;
+      span.textContent = label;
+      cell.append(strong, span);
+      dom.reportGrid.append(cell);
+    }
+    this.audio.cue(won ? 'escape' : 'death');
+  }
+}
+
+new UnmarkedGame();
