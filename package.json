@@ -1,0 +1,19 @@
+{
+  "name": "unmarked-blacksite-escape",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A self-contained offline 3D social horror prototype.",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "vite": "^7.1.7"
+  }
+}
