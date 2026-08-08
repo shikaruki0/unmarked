@@ -129,6 +129,28 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .pause-panel .primary-button { margin-top: 10px; }
 .pause-panel .text-button { margin-left: auto; margin-right: auto; }
 
+#briefing-screen { z-index: 60; }
+.briefing-panel { width: min(720px, calc(100vw - 38px)); max-height: min(88vh, 920px); display: flex; flex-direction: column; padding: clamp(20px, 4vw, 34px); }
+.briefing-header { padding-bottom: 13px; margin-bottom: 13px; border-bottom: 1px solid rgba(161,255,207,.22); text-align: center; }
+.briefing-header h2 { margin: 0; color: #f3fff7; font: 700 clamp(26px, 5vw, 40px)/1 var(--display); letter-spacing: .03em; text-transform: uppercase; text-shadow: 0 0 22px rgba(247,189,78,.28); }
+.briefing-meta { margin: 7px 0 0; color: var(--warning); font: 9px var(--mono); letter-spacing: .15em; }
+.briefing-body { overflow-y: auto; overscroll-behavior: contain; padding-right: 10px; scrollbar-color: rgba(128,255,200,.4) transparent; }
+.briefing-body::-webkit-scrollbar { width: 8px; }
+.briefing-body::-webkit-scrollbar-thumb { background: rgba(128,255,200,.35); }
+.briefing-body:focus-visible { outline: 1px solid var(--aqua); outline-offset: 3px; }
+.briefing-intro { margin: 0 0 14px; color: #d9e7df; font-size: 13px; line-height: 1.62; }
+.briefing-body section { margin-bottom: 13px; }
+.briefing-body h3 { margin: 0 0 6px; color: var(--aqua); font: 600 13px var(--display); letter-spacing: .14em; }
+.briefing-body section p { margin: 0; color: #c3d2ca; font-size: 12.5px; line-height: 1.55; }
+.briefing-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 4px 0 14px; border-top: 1px solid rgba(171,255,209,.16); }
+.briefing-controls p { display: flex; align-items: center; gap: 10px; min-height: 34px; margin: 0; border-bottom: 1px solid rgba(171,255,209,.16); color: #c7d7ce; font-size: 11.5px; }
+.briefing-controls p:nth-child(odd) { border-right: 1px solid rgba(171,255,209,.16); padding-right: 12px; }
+.briefing-controls p:nth-child(even) { padding-left: 12px; }
+.briefing-controls kbd { flex: none; min-width: 58px; height: 20px; font-size: 8px; }
+.briefing-footer { display: grid; justify-items: center; gap: 9px; padding-top: 14px; margin-top: 2px; border-top: 1px solid rgba(161,255,207,.2); }
+.briefing-footer .primary-button { min-width: 190px; }
+.briefing-hint { margin: 0; color: var(--muted); font: 9px var(--mono); letter-spacing: .1em; }
+
 .result-screen { display: grid; place-items: center; background: radial-gradient(ellipse at 50% 20%, rgba(35,109,83,.18), transparent 48%), rgba(0,6,7,.87); backdrop-filter: blur(5px); }
 .result-screen.lost { background: radial-gradient(ellipse at 50% 20%, rgba(132,18,25,.22), transparent 48%), rgba(9,1,2,.9); }
 .result-content { width: min(650px, calc(100vw - 42px)); text-align: center; }
@@ -151,6 +173,10 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 @keyframes loading { from { transform: translateX(-120%); } to { transform: translateX(280%); } }
 
 body.high-contrast { --ink: #fff; --muted: #d6e9df; --aqua: #78ffdf; --panel: rgba(0,0,0,.9); --line: rgba(207,255,238,.68); }
+body.high-contrast .briefing-panel { border-color: var(--aqua); background: #000; }
+body.high-contrast .briefing-body h3 { color: var(--aqua); }
+body.high-contrast .briefing-body section p { color: #fff; }
+body.high-contrast .briefing-controls p { color: #fff; }
 body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 
 @media (max-width: 700px) {
@@ -172,6 +198,8 @@ body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::aft
   .intro-footer { left: 14px; right: 14px; font-size: 7px; }
   .control-grid { grid-template-columns: 1fr; }
   .control-grid p:nth-child(odd), .control-grid p:nth-child(even) { padding-left: 0; padding-right: 0; border-right: none; }
+  .briefing-controls { grid-template-columns: 1fr; }
+  .briefing-controls p:nth-child(odd), .briefing-controls p:nth-child(even) { padding-left: 0; padding-right: 0; border-right: none; }
 }
 
 @media (max-height: 600px) and (min-width: 701px) {

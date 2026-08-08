@@ -2,9 +2,15 @@ import * as THREE from 'three';
 import './style.css';
 import {
   BOT_NAMES,
+  BRIEFING_CONTROLS,
+  BRIEFING_INTRO,
+  BRIEFING_SECTIONS,
+  BRIEFING_TITLE,
+  advanceTutorial,
   assignHiddenKiller,
   clamp,
   createSeededRandom,
+  createTutorialState,
   formatClock,
   getAliveCount,
   getObjectiveState,
@@ -29,7 +35,12 @@ const dom = {
   pause: $('#pause-screen'),
   pauseButton: $('#pause-button'),
   resume: $('#resume-button'),
+  howToPlay: $('#how-to-play-button'),
   restartFromPause: $('#restart-from-pause'),
+  briefing: $('#briefing-screen'),
+  briefingBody: $('#briefing-body'),
+  briefingHeading: $('#briefing-heading'),
+  briefingClose: $('#briefing-close'),
   result: $('#result-screen'),
   resultKicker: $('#result-kicker'),
   resultHeading: $('#result-heading'),
@@ -263,6 +274,11 @@ class UnmarkedGame {
     // Bumped on every startMatch(). Pending timeouts from a previous match can
     // compare their captured epoch against this to avoid touching a new match.
     this.matchEpoch = 0;
+    // Match-managed collision boxes (briefing desk) so restart cleanup is exact.
+    this.matchColliders = [];
+    this.briefingOpen = false;
+    this.tutorialState = createTutorialState();
+    this.briefingLetter = null;
 
     this.player = {
       id: 'player',
@@ -282,6 +298,7 @@ class UnmarkedGame {
     this.setupScene();
     this.buildFacility();
     this.bindEvents();
+    this.buildBriefing();
     this.updateCamera();
     this.renderLoop();
     window.setTimeout(() => dom.loading.classList.add('done'), 650);
@@ -327,6 +344,8 @@ class UnmarkedGame {
     dom.playAgain.addEventListener('click', () => this.startMatch());
     dom.pauseButton.addEventListener('click', () => this.pauseGame());
     dom.resume.addEventListener('click', () => this.resumeGame());
+    dom.howToPlay.addEventListener('click', () => this.openBriefing());
+    dom.briefingClose.addEventListener('click', () => this.closeBriefing());
     dom.restartFromPause.addEventListener('click', () => this.startMatch());
     dom.accessibilityButton.addEventListener('click', () => dom.accessibility.classList.remove('hidden'));
     dom.closeAccessibility.addEventListener('click', () => dom.accessibility.classList.add('hidden'));
@@ -362,8 +381,23 @@ class UnmarkedGame {
   }
 
   onKeyDown(event) {
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyQ', 'ShiftLeft', 'ShiftRight'].includes(event.code)) event.preventDefault();
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyQ', 'KeyH', 'ShiftLeft', 'ShiftRight'].includes(event.code)) event.preventDefault();
     this.keys.add(event.code);
+
+    // The briefing overlay owns the keyboard while it is open: E, Escape, or H
+    // all close it, and Escape closes the briefing before the pause menu.
+    if (this.briefingOpen) {
+      if (event.code === 'KeyE' || event.code === 'Escape' || event.code === 'KeyH') this.closeBriefing();
+      return;
+    }
+    if (event.code === 'KeyH' && !event.repeat) {
+      if (this.phase === 'playing') this.openBriefing();
+      return;
+    }
+    if (event.code === 'Escape') {
+      if (this.phase === 'playing') this.pauseGame();
+      return;
+    }
     if (this.phase !== 'playing' || event.repeat) return;
     if (event.code === 'KeyE') this.beginInteraction();
     if (event.code === 'KeyF') this.useAction();
@@ -394,6 +428,91 @@ class UnmarkedGame {
     dom.pause.classList.add('hidden');
     this.phase = 'playing';
     this.requestPointerLock();
+  }
+
+  /** Builds the briefing overlay DOM once from the shared game-logic content. */
+  buildBriefing() {
+    const body = dom.briefingBody;
+    body.replaceChildren();
+    dom.briefingHeading.textContent = BRIEFING_TITLE;
+
+    const intro = document.createElement('p');
+    intro.className = 'briefing-intro';
+    intro.textContent = BRIEFING_INTRO;
+    body.append(intro);
+
+    const controlsSection = document.createElement('section');
+    const controlsHeading = document.createElement('h3');
+    controlsHeading.textContent = 'CONTROLS';
+    controlsSection.append(controlsHeading);
+    const grid = document.createElement('div');
+    grid.className = 'briefing-controls';
+    for (const control of BRIEFING_CONTROLS) {
+      const row = document.createElement('p');
+      const kbd = document.createElement('kbd');
+      kbd.textContent = control.keys;
+      const span = document.createElement('span');
+      span.textContent = control.action;
+      row.append(kbd, span);
+      grid.append(row);
+    }
+    controlsSection.append(grid);
+    body.append(controlsSection);
+
+    for (const section of BRIEFING_SECTIONS) {
+      const element = document.createElement('section');
+      const heading = document.createElement('h3');
+      heading.textContent = section.heading;
+      element.append(heading);
+      const paragraph = document.createElement('p');
+      const lines = section.body.split('\n');
+      lines.forEach((line, index) => {
+        if (index > 0) paragraph.append(document.createElement('br'));
+        paragraph.append(document.createTextNode(line));
+      });
+      element.append(paragraph);
+      body.append(element);
+    }
+  }
+
+  /**
+   * Opens the shared briefing overlay. From gameplay the simulation is frozen
+   * (phase 'briefing' stops the update loop) and pointer lock is released so
+   * the mouse works inside the overlay. From the pause menu the pause phase is
+   * kept, so closing the briefing returns to the pause menu.
+   */
+  openBriefing() {
+    if (this.briefingOpen) return;
+    this.briefingOpen = true;
+    if (this.phase === 'playing') {
+      this.keys.clear();
+      this.player.interaction = null;
+      this.phase = 'briefing';
+      if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
+      this.signalTutorial('letterOpened');
+    }
+    dom.briefing.classList.remove('hidden');
+    dom.briefingClose.focus();
+    this.audio.cue('pickup');
+  }
+
+  closeBriefing() {
+    if (!this.briefingOpen) return;
+    this.briefingOpen = false;
+    dom.briefing.classList.add('hidden');
+    this.keys.clear();
+    if (this.phase === 'briefing') {
+      this.phase = 'playing';
+      this.requestPointerLock();
+      this.signalTutorial('letterClosed');
+    }
+    this.audio.cue('pickup');
+  }
+
+  signalTutorial(type) {
+    const result = advanceTutorial(this.tutorialState, { type });
+    this.tutorialState = result.state;
+    if (result.message && this.phase === 'playing') this.showSubtitle(result.message, 3800);
   }
 
   resize() {
@@ -613,6 +732,13 @@ class UnmarkedGame {
     this.blackoutUntil = 0;
     this.fogSurgeUntil = 0;
     this.eventLines = [];
+    // Match-managed onboarding objects: exactly one desk, one letter, and one
+    // glow light per match, all owned by this.matchGroup so restarts are clean.
+    this.matchColliders = [];
+    this.briefingLetter = null;
+    this.tutorialState = createTutorialState();
+    this.briefingOpen = false;
+    dom.briefing.classList.add('hidden');
     if (this.subtitleTimer) {
       window.clearTimeout(this.subtitleTimer);
       this.subtitleTimer = null;
@@ -662,13 +788,19 @@ class UnmarkedGame {
     dom.hud.classList.remove('hidden');
     this.logEvent('Facility lock confirmed. Emergency protocol is live.', 'warning');
     this.logEvent('No emergency meetings. No role reveals.', 'danger');
-    this.showSubtitle(this.player.role === 'killer' ? 'You are the killer. Make every death look accidental.' : 'You are a survivor. Restore power and escape alive.', 4200);
+    this.showSubtitle(
+      this.player.role === 'killer'
+        ? 'You are the KILLER. Pretend to help, sabotage power, and eliminate every survivor before anyone escapes.'
+        : 'You are a SURVIVOR. Restore power, find the keycard, and escape. One of the others is the killer.',
+      4800,
+    );
     this.audio.start();
     this.audio.cue('alarm');
     this.requestPointerLock();
   }
 
   createMatchObjects(killerId) {
+    this.createBriefingDesk();
     this.generators = [
       this.createGenerator(ZONES.generatorA, 1),
       this.createGenerator(ZONES.generatorB, 2),
@@ -684,6 +816,62 @@ class UnmarkedGame {
       new THREE.Vector3(6.2, 0, 12), new THREE.Vector3(-1.2, 0, 8), new THREE.Vector3(4.1, 0, 4), new THREE.Vector3(-4.2, 0, 4),
     ];
     BOT_NAMES.forEach((name, index) => this.createBot(name, index, killerId === name ? 'killer' : 'survivor', spawnPoints[index]));
+  }
+
+  /**
+   * Spawns the briefing desk directly in front of the player's start position
+   * and the glowing INCIDENT BRIEFING letter lying flat on top of it. Both are
+   * match-managed (inside this.matchGroup) so a restart yields exactly one desk
+   * and one letter with no accumulated lights. The desk faces the spawn point
+   * and stands clear of every wall, so the player can never be trapped by it.
+   */
+  createBriefingDesk() {
+    const group = new THREE.Group();
+    group.position.set(0, 0, 13.4);
+    const wood = new THREE.MeshStandardMaterial({ color: 0x40382a, roughness: 0.78, metalness: 0.08 });
+    const trim = new THREE.MeshStandardMaterial({ color: 0x2b251c, roughness: 0.85, metalness: 0.04 });
+    const top = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 1.05), wood);
+    top.position.y = 1.02;
+    top.castShadow = true;
+    top.receiveShadow = true;
+    const left = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.96, 0.92), trim);
+    left.position.set(-0.9, 0.48, 0);
+    const right = left.clone();
+    right.position.x = 0.9;
+    const back = new THREE.Mesh(new THREE.BoxGeometry(1.68, 0.96, 0.12), trim);
+    back.position.set(0, 0.48, -0.4);
+    group.add(top, left, right, back);
+    this.matchGroup.add(group);
+    this.matchColliders.push({ minX: -1.05, maxX: 1.05, minZ: 12.875, maxZ: 13.925 });
+
+    const letter = new THREE.Group();
+    letter.position.set(0, 1.13, 13.4);
+    const paperMaterial = new THREE.MeshStandardMaterial({
+      color: 0xdcd5bd,
+      roughness: 0.92,
+      metalness: 0,
+      emissive: 0x8a6a1f,
+      emissiveIntensity: 0.34,
+    });
+    const paper = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.024, 0.6), paperMaterial);
+    paper.position.y = 0.012;
+    paper.rotation.z = 0.03;
+    paper.castShadow = true;
+    // Faint "typed lines" so it reads as a document from a distance.
+    const textLines = new THREE.Mesh(
+      new THREE.BoxGeometry(0.66, 0.006, 0.44),
+      new THREE.MeshStandardMaterial({ color: 0x4a4232, emissive: 0x1c1609, emissiveIntensity: 0.55 }),
+    );
+    textLines.position.y = 0.028;
+    letter.add(paper, textLines);
+    const glowLight = new THREE.PointLight(COLORS.amber, 1.0, 4.2, 2);
+    glowLight.position.set(0, 0.4, 0);
+    letter.add(glowLight);
+    const label = makeLabelSprite('INCIDENT BRIEFING', '#ffd98a', 0.62);
+    label.position.set(0, 0.92, 0);
+    letter.add(label);
+    this.matchGroup.add(letter);
+    this.briefingLetter = { type: 'letter', position: letter.position, group: letter, paper, paperMaterial, glowLight, label };
   }
 
   createGenerator(zone, index) {
@@ -848,11 +1036,41 @@ class UnmarkedGame {
     this.updatePlayerInteraction(delta);
     this.updateBots(delta);
     this.updateEnvironment(delta);
+    this.updateTutorial();
     this.updateEffects(delta);
     this.updatePrompts();
     this.updateHud();
     this.drawMinimap();
     this.checkMatchState();
+  }
+
+  /**
+   * Drives the non-blocking tutorial hints and the letter's gentle pulse.
+   * Each hint fires once per match; the pulse is steady in reduced-motion mode.
+   */
+  updateTutorial() {
+    if (this.tutorialState.letterHintShown === false && this.tutorialState.letterOpenedCount === 0 && this.matchTime > 5.0) {
+      this.signalTutorial('spawn');
+    }
+    const anyRepaired = this.generators.some((generator) => generator.repaired);
+    if (!anyRepaired && !this.tutorialState.generatorHintShown) {
+      const nearFirstGenerator = this.generators.some(
+        (generator) => !generator.repaired && vecDistance(this.player.position, generator.position) < 3.1,
+      );
+      if (nearFirstGenerator) this.signalTutorial('nearGenerator');
+    }
+    if (!this.tutorialState.defenseShown) {
+      const defenseSeen = this.pickups.some(
+        (pickup) => pickup.available && vecDistance(this.player.position, pickup.position) < 6.5,
+      );
+      if (defenseSeen) this.signalTutorial('defenseSeen');
+    }
+    if (this.briefingLetter) {
+      const reduced = this.settings.reducedMotion;
+      const pulse = reduced ? 1 : 0.68 + Math.sin(this.matchTime * 2.7) * 0.32;
+      this.briefingLetter.glowLight.intensity = 0.5 + pulse * 0.5;
+      this.briefingLetter.paperMaterial.emissiveIntensity = 0.22 + pulse * 0.26;
+    }
   }
 
   updatePlayer(delta) {
@@ -892,6 +1110,9 @@ class UnmarkedGame {
     for (const collider of this.staticColliders) {
       if (x + radius > collider.minX && x - radius < collider.maxX && z + radius > collider.minZ && z - radius < collider.maxZ) return true;
     }
+    for (const collider of this.matchColliders) {
+      if (x + radius > collider.minX && x - radius < collider.maxX && z + radius > collider.minZ && z - radius < collider.maxZ) return true;
+    }
     if (!this.exitOpen && x + radius > -3.7 && x - radius < 3.7 && z - radius < -34.05 && z + radius > -35.15) return true;
     return false;
   }
@@ -912,6 +1133,10 @@ class UnmarkedGame {
     const target = this.getNearestInteractable();
     if (!target) return;
     const { type, ref } = target;
+    if (type === 'letter') {
+      this.openBriefing();
+      return;
+    }
     if (type === 'generator') {
       if (ref.repaired && this.player.role === 'killer') {
         this.player.interaction = { type: 'sabotage', ref, duration: 1.5, elapsed: 0 };
@@ -957,6 +1182,7 @@ class UnmarkedGame {
 
   completeGenerator(generator, actor) {
     if (generator.repaired) return;
+    const firstCompletion = this.generators.every((node) => !node.repaired);
     generator.progress = 1;
     generator.repaired = true;
     this.updateGeneratorVisual(generator);
@@ -964,6 +1190,7 @@ class UnmarkedGame {
     this.audio.cue('complete');
     this.logEvent(`PWR-${String(generator.index).padStart(2, '0')} comes online.`, 'normal');
     this.showSubtitle(actor === 'YOU' ? 'Power node stabilized.' : 'A generator hums to life nearby.', 1800);
+    if (firstCompletion) this.signalTutorial('firstGeneratorDone');
     if (this.generators.every((node) => node.repaired) && !this.securityUnlocked) {
       this.securityUnlocked = true;
       this.keycard.active = true;
@@ -971,6 +1198,7 @@ class UnmarkedGame {
       this.keycard.group.position.set(23.1, 1.45, 19.2);
       this.logEvent('Security office unlocked: exit keycard available.', 'warning');
       this.showSubtitle('Emergency power restored. The security office has unlocked.', 3200);
+      this.signalTutorial('powerRestored');
       this.audio.cue('alarm');
     }
   }
@@ -997,6 +1225,7 @@ class UnmarkedGame {
     this.createPulse(this.keycard.position, COLORS.aqua, 1.7);
     this.logEvent('Exit keycard removed from the security office.', 'warning');
     this.showSubtitle(actor === 'YOU' ? 'Exit keycard acquired. Reach the quarantine door.' : 'A security lock clicks open somewhere in the facility.', 2600);
+    this.signalTutorial('keycardTaken');
   }
 
   useExit(actor) {
@@ -1031,6 +1260,7 @@ class UnmarkedGame {
     this.audio.cue('pickup');
     this.logEvent(`You took a ${pickup.kind === 'taser' ? 'taser' : 'metal pipe'}.`, 'warning');
     this.showSubtitle(pickup.kind === 'pipe' ? 'A pipe can kill the wrong person. Choose carefully.' : 'One charge. It may buy you a few seconds.', 2500);
+    this.signalTutorial('defenseCollected');
   }
 
   inspectEvidence(evidence) {
@@ -1092,6 +1322,10 @@ class UnmarkedGame {
   getNearestInteractable() {
     if (!this.player.alive) return null;
     const choices = [];
+    if (this.briefingLetter && !this.player.hidden) {
+      const distance = vecDistance(this.player.position, this.briefingLetter.position);
+      if (distance < 2.1) choices.push({ type: 'letter', ref: this.briefingLetter, distance });
+    }
     for (const generator of this.generators) {
       const distance = vecDistance(this.player.position, generator.position);
       if (distance < 2.55) choices.push({ type: 'generator', ref: generator, distance });
@@ -1125,6 +1359,7 @@ class UnmarkedGame {
   interactionLabel(target) {
     if (!target) return null;
     const { type, ref } = target;
+    if (type === 'letter') return 'E — READ INCIDENT BRIEFING';
     if (type === 'generator') {
       if (ref.repaired && this.player.role === 'killer') return 'HOLD E — SABOTAGE POWER NODE';
       if (ref.repaired) return 'POWER NODE ONLINE';
@@ -1703,6 +1938,8 @@ class UnmarkedGame {
     if (this.phase === 'ended') return;
     this.phase = 'ended';
     this.keys.clear();
+    this.briefingOpen = false;
+    dom.briefing.classList.add('hidden');
     if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
     dom.hud.classList.add('hidden');
     dom.pause.classList.add('hidden');

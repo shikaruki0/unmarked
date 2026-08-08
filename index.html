@@ -85,9 +85,10 @@
             <p><kbd>W A S D</kbd><span>Move</span></p>
             <p><kbd>MOUSE</kbd><span>Look</span></p>
             <p><kbd>SHIFT</kbd><span>Sprint</span></p>
-            <p><kbd>E</kbd><span>Interact / investigate</span></p>
+            <p><kbd>E</kbd><span>Interact / read briefing</span></p>
             <p><kbd>F</kbd><span>Use held defense / attack</span></p>
             <p><kbd>Q</kbd><span>Toggle flashlight</span></p>
+            <p><kbd>H</kbd><span>Open or close the briefing</span></p>
             <p><kbd>ESC</kbd><span>Pause / release mouse</span></p>
           </div>
           <label class="toggle-row"><input id="reduced-motion" type="checkbox" /> <span>Reduced camera shake and visual effects</span></label>
@@ -103,7 +104,24 @@
           <h2 id="pause-heading">The blacksite waits.</h2>
           <p>Mouse control is released. Resume when you are ready.</p>
           <button id="resume-button" class="primary-button">RESUME <span>↗</span></button>
-          <button id="restart-from-pause" class="text-button">Abandon match & start again</button>
+          <button id="how-to-play-button" class="text-button">HOW TO PLAY — read the briefing</button>
+          <button id="restart-from-pause" class="text-button">Abandon match &amp; start again</button>
+          <p class="modal-copy">Press <kbd>H</kbd> at any time to reopen the briefing.</p>
+        </div>
+      </section>
+
+      <section id="briefing-screen" class="screen modal-screen hidden" aria-modal="true" role="dialog" aria-labelledby="briefing-heading">
+        <div class="modal-panel briefing-panel">
+          <header class="briefing-header">
+            <p class="eyebrow">INCIDENT E-17 / EYES ONLY</p>
+            <h2 id="briefing-heading">BLACKSITE EMERGENCY BRIEFING</h2>
+            <p class="briefing-meta">CONFIDENTIAL · SURVIVORS AND KILLER</p>
+          </header>
+          <div id="briefing-body" class="briefing-body" tabindex="0"></div>
+          <footer class="briefing-footer">
+            <button id="briefing-close" class="primary-button">CLOSE <span>✕</span></button>
+            <p class="briefing-hint">Press <kbd>E</kbd> or <kbd>ESC</kbd> to close</p>
+          </footer>
         </div>
       </section>
 
