@@ -86,3 +86,148 @@ export function isMatchOver({ player, bots, killerEscaped = false }) {
   if (survivorsRemaining === 0) return { over: true, winner: 'killer', reason: 'no-survivors' };
   return { over: false, winner: null, reason: null };
 }
+
+/* ------------------------------------------------------------------ */
+/* First-run onboarding: briefing letter content and tutorial messages  */
+/* ------------------------------------------------------------------ */
+
+/** Title shown on the in-world letter and the briefing overlay. */
+export const BRIEFING_TITLE = 'BLACKSITE EMERGENCY BRIEFING';
+
+export const BRIEFING_INTRO =
+  'Eight people are trapped inside this facility. One of them is secretly the killer. ' +
+  'The killer looks exactly like everyone else. There are no meetings, votes, or role reveals. ' +
+  'Watch what people do, investigate what they leave behind, and be careful who you trust.';
+
+/** Short, readable sections rendered by the briefing overlay. */
+export const BRIEFING_SECTIONS = [
+  {
+    heading: 'SURVIVOR OBJECTIVE',
+    body: '1. Restore all three power nodes.\n2. Enter Security after emergency power returns.\n3. Collect the exit keycard.\n4. Open the north Quarantine Exit.\n5. Escape alive.',
+  },
+  {
+    heading: 'KILLER OBJECTIVE',
+    body: 'If you are the killer, pretend to help, sabotage repaired power nodes, isolate survivors, and eliminate every witness before anyone escapes.',
+  },
+  {
+    heading: 'IMPORTANT',
+    body: 'Your role is shown on the HUD when the match begins. Do not reveal the hidden killer through the briefing letter.',
+  },
+  {
+    heading: 'DEFENSE',
+    body: 'A taser temporarily stuns a nearby person. A metal pipe is dangerous. Attacking an innocent survivor has serious consequences.',
+  },
+  {
+    heading: 'INVESTIGATION',
+    body: 'Look for blood, footprints, dropped badges, damaged equipment, and security recordings. A clue may be incomplete or misleading. Evidence never reveals a role automatically.',
+  },
+  {
+    heading: 'FINAL WARNING',
+    body: 'Stay near people you trust — but remember: the person standing beside you may be the killer.',
+  },
+];
+
+/** Controls shown in the briefing overlay (H is the briefing toggle). */
+export const BRIEFING_CONTROLS = [
+  { keys: 'W A S D', action: 'Move' },
+  { keys: 'MOUSE', action: 'Look around' },
+  { keys: 'SHIFT', action: 'Sprint' },
+  { keys: 'E', action: 'Interact or read' },
+  { keys: 'HOLD E', action: 'Repair or sabotage a power node' },
+  { keys: 'F', action: 'Attack or use the held defensive item' },
+  { keys: 'Q', action: 'Toggle flashlight' },
+  { keys: 'H', action: 'Open or close the briefing' },
+  { keys: 'ESC', action: 'Pause, or close the briefing first' },
+];
+
+/** Non-blocking tutorial hints shown through the existing subtitle system. */
+export const TUTORIAL_MESSAGES = {
+  letterHint: 'Read the glowing briefing letter on the desk. Press E.',
+  objective: 'OBJECTIVE: Restore three power nodes.',
+  generatorHint: 'Hold E until the power node is fully repaired.',
+  firstGeneratorDone: 'Two power nodes remain. Watch the people around you.',
+  defenseItem: 'Tasers are nonlethal. The pipe can harm an innocent. Use F carefully.',
+  powerRestored: 'Emergency power restored. Find the keycard inside Security.',
+  keycardTaken: 'Reach the north Quarantine Exit and escape.',
+};
+
+/** Fresh per-match tutorial state: every hint fires at most once per match. */
+export function createTutorialState() {
+  return {
+    letterHintShown: false,
+    objectiveShown: false,
+    generatorHintShown: false,
+    firstGeneratorDoneShown: false,
+    defenseShown: false,
+    powerRestoredShown: false,
+    keycardShown: false,
+    letterOpenedCount: 0,
+  };
+}
+
+/**
+ * Pure tutorial state machine. Returns the next state plus the message to
+ * show (or null). Each hint fires exactly once per match, so nothing repeats.
+ *
+ * @param {ReturnType<typeof createTutorialState>} state
+ * @param {{ type: string }} signal
+ * @returns {{ state: object, message: string | null }}
+ */
+export function advanceTutorial(state, signal) {
+  const next = { ...state };
+  let message = null;
+
+  switch (signal.type) {
+    case 'spawn':
+      // Delayed spawn hint. Skipped if the player already read the letter.
+      if (!next.letterHintShown && next.letterOpenedCount === 0) {
+        next.letterHintShown = true;
+        message = TUTORIAL_MESSAGES.letterHint;
+      }
+      break;
+    case 'letterOpened':
+      next.letterOpenedCount += 1;
+      break;
+    case 'letterClosed':
+      if (!next.objectiveShown) {
+        next.objectiveShown = true;
+        message = TUTORIAL_MESSAGES.objective;
+      }
+      break;
+    case 'nearGenerator':
+      if (!next.generatorHintShown) {
+        next.generatorHintShown = true;
+        message = TUTORIAL_MESSAGES.generatorHint;
+      }
+      break;
+    case 'firstGeneratorDone':
+      if (!next.firstGeneratorDoneShown) {
+        next.firstGeneratorDoneShown = true;
+        message = TUTORIAL_MESSAGES.firstGeneratorDone;
+      }
+      break;
+    case 'defenseSeen':
+    case 'defenseCollected':
+      if (!next.defenseShown) {
+        next.defenseShown = true;
+        message = TUTORIAL_MESSAGES.defenseItem;
+      }
+      break;
+    case 'powerRestored':
+      if (!next.powerRestoredShown) {
+        next.powerRestoredShown = true;
+        message = TUTORIAL_MESSAGES.powerRestored;
+      }
+      break;
+    case 'keycardTaken':
+      if (!next.keycardShown) {
+        next.keycardShown = true;
+        message = TUTORIAL_MESSAGES.keycardTaken;
+      }
+      break;
+    default:
+      break;
+  }
+
+  return { state: next, message };
+}

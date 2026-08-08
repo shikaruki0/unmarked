@@ -29,6 +29,16 @@ To run the automated gameplay-rule tests:
 npm test
 ```
 
+## First-run onboarding
+
+A brand-new player can start a match and understand the game without help:
+
+1. Every match begins facing a **briefing desk** in the lobby with a glowing **INCIDENT BRIEFING** letter on it (pale paper, gentle amber glow, floating label above it).
+2. Walk close and press `E` (prompt: `E — READ INCIDENT BRIEFING`) to open a full briefing page: what the game is about, the survivor objective, the killer objective, controls, defense, investigation, and a final warning.
+3. The briefing **pauses the simulation** while open and releases the mouse. Close it with `E`, `Esc`, or the **CLOSE** button; mouse control and pointer lock are restored afterwards.
+4. A short sequence of non-blocking subtitle hints teaches the objective, generator repair, defensive items, power restoration, and the escape route — each appears once, only when relevant.
+5. **HOW TO PLAY** in the pause menu reopens the exact same briefing (press `H` at any time in a match as a shortcut). Your secret role is still shown only on your role card and spawn message — never in the letter.
+
 ## Controls
 
 | Control | Action |
@@ -37,12 +47,13 @@ npm test
 | Mouse | Look |
 | `Shift` | Sprint |
 | Hold `E` | Repair / sabotage a power node |
-| `E` | Interact, investigate, hide, collect items, or use the exit |
+| `E` | Interact, read the briefing, investigate, hide, collect items, or use the exit |
 | `F` | Strike as killer / use your held defense item |
 | `Q` | Toggle flashlight |
-| `Esc` | Pause and release the mouse |
+| `H` | Open or close the briefing letter |
+| `Esc` | Pause and release the mouse (or close the briefing first) |
 
-The Accessibility & Controls panel includes high-contrast and reduced-motion settings. Critical sound events always also appear as captions.
+The Accessibility & Controls panel includes high-contrast and reduced-motion settings (reduced motion disables the letter's pulse animation and keeps a steady glow). Critical sound events always also appear as captions.
 
 ## Current playable loop
 
@@ -64,7 +75,8 @@ The Accessibility & Controls panel includes high-contrast and reduced-motion set
 - Power repair / sabotage, keycard, exit-door, evidence, defense, hiding, and dynamic-event systems
 - Generated ambient audio and feedback effects—no copyrighted or downloaded art/audio assets
 - HUD, event log, captions, minimap, match report, high-contrast mode, and reduced-motion mode
-- Pure match-rule unit tests
+- First-run onboarding: glowing briefing letter on the lobby desk, a paused-reading briefing overlay with controls, non-blocking tutorial hints, and a HOW TO PLAY entry in the pause menu
+- Pure match-rule unit tests (including the tutorial state machine and briefing content)
 
 ## Intentional scope boundary
 
