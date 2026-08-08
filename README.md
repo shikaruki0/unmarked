@@ -84,7 +84,9 @@ The next production milestones would be:
 index.html              Game UI and menus
 src/main.js             Three.js world, interaction, AI, UI, audio, and match loop
 src/game-logic.js       Pure match rules shared by runtime and tests
+src/three-utils.js      Pure Three.js resource cleanup (prevents match-restart leaks)
 src/style.css           Horror UI, responsive layout, and accessibility styles
-tests/game-logic.test.mjs  Rule-level regression tests
+tests/game-logic.test.mjs   Rule-level regression tests
+tests/three-utils.test.mjs  Match-restart resource-disposal regression tests
 vite.config.js          Local and Arena preview server configuration
 ```
