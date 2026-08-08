@@ -11,6 +11,7 @@ import {
   getSurvivorCount,
   pickEnvironmentalEvent,
 } from './game-logic.js';
+import { disposeObjectTree } from './three-utils.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -259,6 +260,9 @@ class UnmarkedGame {
     this.exitDoorOpen = 0;
     this.awaitingPointerLock = false;
     this.settings = { reducedMotion: false, highContrast: false };
+    // Bumped on every startMatch(). Pending timeouts from a previous match can
+    // compare their captured epoch against this to avoid touching a new match.
+    this.matchEpoch = 0;
 
     this.player = {
       id: 'player',
@@ -589,8 +593,13 @@ class UnmarkedGame {
   }
 
   clearMatch() {
-    while (this.matchGroup.children.length) this.matchGroup.remove(this.matchGroup.children[0]);
-    while (this.fxGroup.children.length) this.fxGroup.remove(this.fxGroup.children[0]);
+    // Dispose GPU resources (geometries/materials/textures) AND detach children.
+    // Previously these children were only removed from the scene graph, so their
+    // GPU memory leaked across every restart. Match-created lights live inside
+    // these groups (generators, pickups, keycard), so they are removed too
+    // instead of accumulating as direct children of this.scene.
+    disposeObjectTree(this.matchGroup);
+    disposeObjectTree(this.fxGroup);
     this.vfx = [];
     this.generators = [];
     this.bots = [];
@@ -604,11 +613,18 @@ class UnmarkedGame {
     this.blackoutUntil = 0;
     this.fogSurgeUntil = 0;
     this.eventLines = [];
+    if (this.subtitleTimer) {
+      window.clearTimeout(this.subtitleTimer);
+      this.subtitleTimer = null;
+    }
     dom.eventLog.innerHTML = '';
+    dom.subtitle.classList.remove('visible');
+    dom.subtitle.textContent = '';
   }
 
   startMatch() {
     this.clearMatch();
+    this.matchEpoch += 1;
     this.random = createSeededRandom((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0);
     const assignment = assignHiddenKiller(this.random);
     this.matchTime = 0;
@@ -689,9 +705,12 @@ class UnmarkedGame {
     label.position.set(0, 2.25, 0);
     group.add(label);
     this.matchGroup.add(group);
+    // Attach the status light to the generator GROUP (not this.scene) so it is
+    // removed and disposed together with the match. Previously it was added
+    // directly to the scene, so 3 new PointLights leaked on every restart.
     const light = new THREE.PointLight(COLORS.red, 0.58, 5.5, 2);
-    light.position.copy(zone.position).add(new THREE.Vector3(0, 1.4, 0));
-    this.scene.add(light);
+    light.position.set(0, 1.4, 0);
+    group.add(light);
     const generator = {
       type: 'generator', index, zone, position: group.position, group, panel, coil, light,
       progress: 0, repaired: false, botWorkers: new Set(), lastSabotaged: -99,
@@ -1046,7 +1065,10 @@ class UnmarkedGame {
     this.audio.cue('evidence');
     this.logEvent('You reviewed a corrupted security recording.', 'normal');
     this.showSubtitle(randomFrom(this.random, lines), 4200);
+    const epoch = this.matchEpoch;
     window.setTimeout(() => {
+      // Ignore if the match restarted while this timeout was pending.
+      if (epoch !== this.matchEpoch) return;
       if (this.terminal?.screen?.material) {
         this.terminal.screen.material.emissive.setHex(0x195e49);
         this.terminal.screen.material.emissiveIntensity = 1.35;
@@ -1159,7 +1181,11 @@ class UnmarkedGame {
         this.logEvent('You knocked an attacker down. Their identity is still unconfirmed.', 'warning');
       } else {
         this.killBot(nearest, 'YOU');
-        window.setTimeout(() => this.endMatch(false, 'You killed an innocent survivor. The blacksite takes you too.', 'innocent-killed'), 220);
+        const killEpoch = this.matchEpoch;
+        window.setTimeout(() => {
+          if (killEpoch !== this.matchEpoch) return;
+          this.endMatch(false, 'You killed an innocent survivor. The blacksite takes you too.', 'innocent-killed');
+        }, 220);
       }
     }
   }
