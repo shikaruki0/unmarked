@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import './style.css';
+import './mobile.css';
 import {
   BOT_NAMES,
   BRIEFING_CONTROLS,
@@ -67,6 +68,12 @@ const dom = {
   subtitle: $('#subtitle'),
   damageFlash: $('#damage-flash'),
   minimap: $('#minimap'),
+  touchControls: $('#touch-controls'),
+  touchStick: $('#touch-stick'),
+  touchStickKnob: $('#touch-stick-knob'),
+  touchInteract: $('#touch-interact'),
+  touchAction: $('#touch-action'),
+  touchFlashlight: $('#touch-flashlight'),
 };
 
 const COLORS = {
@@ -270,6 +277,10 @@ class UnmarkedGame {
     this.nextEventAt = 30;
     this.exitDoorOpen = 0;
     this.awaitingPointerLock = false;
+    this.isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+    this.touchMove = { x: 0, y: 0, pointerId: null };
+    this.touchLook = { pointerId: null, x: 0, y: 0 };
+    document.body.classList.toggle('touch-device', this.isTouchDevice);
     this.settings = { reducedMotion: false, highContrast: false };
     // Bumped on every startMatch(). Pending timeouts from a previous match can
     // compare their captured epoch against this to avoid touching a new match.
@@ -372,11 +383,87 @@ class UnmarkedGame {
         this.awaitingPointerLock = false;
         return;
       }
-      if (this.phase === 'playing' && !this.awaitingPointerLock) this.pauseGame(true);
+      if (!this.isTouchDevice && this.phase === 'playing' && !this.awaitingPointerLock) this.pauseGame(true);
     });
     dom.canvas.addEventListener('mousedown', (event) => {
       if (this.phase === 'playing' && document.pointerLockElement !== dom.canvas) this.requestPointerLock();
       if (this.phase === 'playing' && event.button === 0 && document.pointerLockElement === dom.canvas) this.useAction();
+    });
+    this.bindTouchControls();
+  }
+
+  bindTouchControls() {
+    if (!this.isTouchDevice) return;
+    const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
+    const resetStick = () => {
+      this.touchMove.x = 0;
+      this.touchMove.y = 0;
+      this.touchMove.pointerId = null;
+      dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    };
+    const moveStick = (event) => {
+      if (event.pointerId !== this.touchMove.pointerId) return;
+      stop(event);
+      const rect = dom.touchStick.getBoundingClientRect();
+      const radius = rect.width * 0.32;
+      let x = event.clientX - (rect.left + rect.width / 2);
+      let y = event.clientY - (rect.top + rect.height / 2);
+      const length = Math.hypot(x, y);
+      if (length > radius) { x = (x / length) * radius; y = (y / length) * radius; }
+      this.touchMove.x = x / radius;
+      this.touchMove.y = y / radius;
+      dom.touchStickKnob.style.transform = `translate(${x}px, ${y}px)`;
+    };
+    dom.touchStick.addEventListener('pointerdown', (event) => {
+      stop(event);
+      this.touchMove.pointerId = event.pointerId;
+      dom.touchStick.setPointerCapture(event.pointerId);
+      moveStick(event);
+    });
+    dom.touchStick.addEventListener('pointermove', moveStick);
+    dom.touchStick.addEventListener('pointerup', resetStick);
+    dom.touchStick.addEventListener('pointercancel', resetStick);
+
+    dom.canvas.addEventListener('pointerdown', (event) => {
+      if (event.pointerType !== 'touch' || this.phase !== 'playing' || event.clientX < window.innerWidth * 0.36) return;
+      this.touchLook = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      dom.canvas.setPointerCapture(event.pointerId);
+    });
+    dom.canvas.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== this.touchLook.pointerId || this.phase !== 'playing') return;
+      event.preventDefault();
+      const sensitivity = this.settings.reducedMotion ? 0.0024 : 0.0034;
+      this.yaw -= (event.clientX - this.touchLook.x) * sensitivity;
+      this.pitch = clamp(this.pitch - (event.clientY - this.touchLook.y) * sensitivity, -1.25, 1.08);
+      this.touchLook.x = event.clientX;
+      this.touchLook.y = event.clientY;
+    });
+    const endLook = (event) => { if (event.pointerId === this.touchLook.pointerId) this.touchLook.pointerId = null; };
+    dom.canvas.addEventListener('pointerup', endLook);
+    dom.canvas.addEventListener('pointercancel', endLook);
+
+    const holdInteract = (event) => {
+      stop(event);
+      if (this.phase !== 'playing') return;
+      this.keys.add('KeyE');
+      this.beginInteraction();
+      dom.touchInteract.classList.add('pressed');
+    };
+    const releaseInteract = (event) => {
+      stop(event);
+      this.keys.delete('KeyE');
+      dom.touchInteract.classList.remove('pressed');
+    };
+    dom.touchInteract.addEventListener('pointerdown', holdInteract);
+    dom.touchInteract.addEventListener('pointerup', releaseInteract);
+    dom.touchInteract.addEventListener('pointercancel', releaseInteract);
+    dom.touchAction.addEventListener('pointerdown', (event) => { stop(event); this.useAction(); });
+    dom.touchFlashlight.addEventListener('pointerdown', (event) => {
+      stop(event);
+      if (this.phase !== 'playing') return;
+      this.flashlightOn = !this.flashlightOn;
+      this.showSubtitle(this.flashlightOn ? 'Flashlight on.' : 'Flashlight off.', 1050);
+      this.audio.cue(this.flashlightOn ? 'pickup' : 'sabotage');
     });
   }
 
@@ -409,6 +496,7 @@ class UnmarkedGame {
   }
 
   requestPointerLock() {
+    if (this.isTouchDevice) return;
     this.awaitingPointerLock = true;
     const lock = dom.canvas.requestPointerLock?.();
     if (lock?.catch) lock.catch(() => { this.awaitingPointerLock = false; });
@@ -419,6 +507,9 @@ class UnmarkedGame {
     if (this.phase !== 'playing') return;
     this.phase = 'paused';
     this.keys.clear();
+    this.touchMove.x = 0;
+    this.touchMove.y = 0;
+    dom.touchStickKnob.style.transform = 'translate(0, 0)';
     dom.pause.classList.remove('hidden');
     if (!fromPointerChange && document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
   }
@@ -447,7 +538,15 @@ class UnmarkedGame {
     controlsSection.append(controlsHeading);
     const grid = document.createElement('div');
     grid.className = 'briefing-controls';
-    for (const control of BRIEFING_CONTROLS) {
+    const controls = this.isTouchDevice ? [
+      { keys: 'STICK', action: 'Move; push to the edge to sprint' },
+      { keys: 'DRAG', action: 'Look around on the right side' },
+      { keys: 'USE', action: 'Interact; hold to repair or sabotage' },
+      { keys: 'ACT', action: 'Attack or use the held item' },
+      { keys: 'LAMP', action: 'Toggle flashlight' },
+      { keys: 'Ⅱ', action: 'Pause or reopen How to Play' },
+    ] : BRIEFING_CONTROLS;
+    for (const control of controls) {
       const row = document.createElement('p');
       const kbd = document.createElement('kbd');
       kbd.textContent = control.keys;
@@ -1075,8 +1174,10 @@ class UnmarkedGame {
 
   updatePlayer(delta) {
     if (!this.player.alive) return;
-    const movingInput = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD');
-    const sprinting = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && movingInput && this.player.stamina > 0.5 && !this.player.hidden;
+    const touchMoving = Math.hypot(this.touchMove.x, this.touchMove.y) > 0.12;
+    const movingInput = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD') || touchMoving;
+    const touchSprint = touchMoving && Math.hypot(this.touchMove.x, this.touchMove.y) > 0.86;
+    const sprinting = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || touchSprint) && movingInput && this.player.stamina > 0.5 && !this.player.hidden;
     const speed = sprinting ? 6.7 : 4.05;
     if (sprinting) this.player.stamina = Math.max(0, this.player.stamina - 30 * delta);
     else this.player.stamina = Math.min(100, this.player.stamina + 17 * delta);
@@ -1089,6 +1190,10 @@ class UnmarkedGame {
       if (this.keys.has('KeyS')) direction.sub(forward);
       if (this.keys.has('KeyD')) direction.add(right);
       if (this.keys.has('KeyA')) direction.sub(right);
+      if (touchMoving) {
+        direction.addScaledVector(right, this.touchMove.x);
+        direction.addScaledVector(forward, -this.touchMove.y);
+      }
       if (direction.lengthSq() > 0) {
         direction.normalize().multiplyScalar(speed * delta);
         this.moveWithCollision(this.player.position, direction.x, direction.z, 0.42);
@@ -1819,7 +1924,7 @@ class UnmarkedGame {
       const label = this.interactionLabel(target);
       if (label) {
         dom.interaction.classList.remove('hidden');
-        dom.interactionText.textContent = label;
+        dom.interactionText.textContent = this.isTouchDevice ? label.replace(/^HOLD E/, 'HOLD USE').replace(/^E/, 'USE') : label;
       } else dom.interaction.classList.add('hidden');
     }
     let action = null;
@@ -1828,7 +1933,7 @@ class UnmarkedGame {
     else if (this.player.held === 'pipe') action = 'F — SWING PIPE (LETHAL)';
     if (action && !this.player.hidden) {
       dom.action.classList.remove('hidden');
-      dom.actionText.textContent = action;
+      dom.actionText.textContent = this.isTouchDevice ? action.replace(/^F/, 'ACT') : action;
     } else dom.action.classList.add('hidden');
   }
 
