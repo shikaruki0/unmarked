@@ -55,7 +55,22 @@
         <div id="flashlight-indicator" class="flashlight-indicator">◉ LAMP <kbd>Q</kbd></div>
         <div id="subtitle" class="subtitle" aria-live="assertive"></div>
         <canvas id="minimap" width="180" height="180" aria-label="Facility map"></canvas>
+
+        <section id="touch-controls" class="touch-controls" aria-label="Touch controls">
+          <div id="touch-stick" class="touch-stick" aria-label="Movement joystick"><span id="touch-stick-knob"></span></div>
+          <p class="touch-look-hint">DRAG TO LOOK</p>
+          <div class="touch-actions">
+            <button id="touch-flashlight" type="button" aria-label="Toggle flashlight">LAMP</button>
+            <button id="touch-interact" type="button" aria-label="Interact or hold to repair">USE</button>
+            <button id="touch-action" type="button" aria-label="Attack or use held item">ACT</button>
+          </div>
+        </section>
       </section>
+
+      <aside id="rotate-device" class="rotate-device" aria-live="polite">
+        <strong>ROTATE YOUR PHONE</strong>
+        <span>UNMARKED plays in landscape mode.</span>
+      </aside>
 
       <section id="intro-screen" class="screen intro-screen">
         <div class="screen-noise" aria-hidden="true"></div>

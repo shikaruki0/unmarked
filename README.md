@@ -17,6 +17,8 @@ npm run dev
 
 Open the address printed by Vite (normally `http://localhost:5173`) in a desktop browser. Click **ENTER BLACKSITE**, then click the game view if your browser asks to capture the mouse.
 
+The same web build also supports modern Android and iPhone browsers. Rotate the phone to **landscape**: use the left virtual stick to move (push fully to sprint), drag the right side to look, hold **USE** to interact or repair, press **ACT** to use an item/attack, and press **LAMP** for the flashlight. Mobile is an experimental target and should be tested on real devices.
+
 To make a production web bundle:
 
 ```bash
