@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#071016" />
     <title>UNMARKED — Blacksite Escape</title>
   </head>
@@ -40,6 +40,18 @@
           <p id="objective-copy">0 / 3 power nodes online</p>
         </aside>
 
+        <aside id="tutorial-card" class="tutorial-card hidden" aria-live="polite">
+          <p class="eyebrow">TRAINING — STEP <span id="tutorial-step">1 / 12</span></p>
+          <h2 id="tutorial-title">Look around</h2>
+          <p id="tutorial-copy">Move the mouse to look around.</p>
+          <div class="objective-progress training-progress"><span id="tutorial-progress-fill"></span></div>
+          <p id="tutorial-hint" class="tutorial-hint"></p>
+          <div class="tutorial-actions">
+            <button id="tutorial-skip-button" class="text-button" type="button">SKIP TUTORIAL</button>
+            <button id="tutorial-exit-button" class="text-button" type="button">EXIT TRAINING</button>
+          </div>
+        </aside>
+
         <aside id="status-card" class="status-card">
           <div class="status-row"><span>ALIVE</span><strong id="alive-count">8 / 8</strong></div>
           <div class="status-row"><span>HEALTH</span><div class="health-track"><span id="health-fill"></span></div><strong id="health-value">100</strong></div>
@@ -74,22 +86,27 @@
 
       <section id="intro-screen" class="screen intro-screen">
         <div class="screen-noise" aria-hidden="true"></div>
-        <div class="intro-content">
-          <p class="eyebrow glowing">BLACKSITE E-17 / INCIDENT SIMULATION</p>
-          <h1><span>UN</span>MARKED</h1>
-          <p class="tagline">Eight entered. One is lying.</p>
-          <div class="intro-rule"></div>
-          <p class="intro-copy">A power failure seals you inside an abandoned research facility with seven strangers. One of them is a killer. There are no meetings, no votes, and no certainty.</p>
-          <div class="feature-grid">
-            <div><b>01</b><span>Read behavior.<br />Trust carefully.</span></div>
-            <div><b>02</b><span>Repair power.<br />Find the exit key.</span></div>
-            <div><b>03</b><span>Leave alive.<br />Or leave no one.</span></div>
+        <div class="intro-scroll">
+          <div class="intro-content">
+            <p class="eyebrow glowing">BLACKSITE E-17 / INCIDENT SIMULATION</p>
+            <h1><span>UN</span>MARKED</h1>
+            <p class="tagline">Eight entered. One is lying.</p>
+            <div class="intro-rule"></div>
+            <p class="intro-copy">A power failure seals you inside an abandoned research facility with seven strangers. One of them is a killer. There are no meetings, no votes, and no certainty.</p>
+            <div class="feature-grid">
+              <div><b>01</b><span>Read behavior.<br />Trust carefully.</span></div>
+              <div><b>02</b><span>Repair power.<br />Find the exit key.</span></div>
+              <div><b>03</b><span>Leave alive.<br />Or leave no one.</span></div>
+            </div>
+            <div class="intro-actions">
+              <button id="start-button" class="primary-button">ENTER BLACKSITE <span>↗</span></button>
+              <button id="tutorial-button" class="secondary-button tutorial-button">TUTORIAL — LEARN TO SURVIVE</button>
+              <p class="start-note">Single player · 7 adaptive AI · Headphones recommended</p>
+              <button id="accessibility-button" class="text-button">Accessibility &amp; controls</button>
+            </div>
           </div>
-          <button id="start-button" class="primary-button">ENTER BLACKSITE <span>↗</span></button>
-          <p class="start-note">Single player · 7 adaptive AI · Headphones recommended</p>
-          <button id="accessibility-button" class="text-button">Accessibility & controls</button>
+          <div class="intro-footer"><span>OFFLINE BUILD 0.1.0</span><span>NO ONE IS MARKED</span></div>
         </div>
-        <div class="intro-footer"><span>OFFLINE BUILD 0.1.0</span><span>NO ONE IS MARKED</span></div>
       </section>
 
       <section id="accessibility-screen" class="screen modal-screen hidden" aria-modal="true" role="dialog" aria-labelledby="accessibility-heading">
@@ -106,6 +123,14 @@
             <p><kbd>H</kbd><span>Open or close the briefing</span></p>
             <p><kbd>ESC</kbd><span>Pause / release mouse</span></p>
           </div>
+          <div class="control-grid touch-control-grid" aria-label="Touch controls">
+            <p><kbd>STICK</kbd><span>Move · push to edge to sprint</span></p>
+            <p><kbd>DRAG</kbd><span>Look on right side</span></p>
+            <p><kbd>USE</kbd><span>Interact · hold to repair</span></p>
+            <p><kbd>ACT</kbd><span>Use held item</span></p>
+            <p><kbd>LAMP</kbd><span>Toggle flashlight</span></p>
+            <p><kbd>Ⅱ</kbd><span>Pause</span></p>
+          </div>
           <label class="toggle-row"><input id="reduced-motion" type="checkbox" /> <span>Reduced camera shake and visual effects</span></label>
           <label class="toggle-row"><input id="high-contrast" type="checkbox" /> <span>High-contrast interface</span></label>
           <p class="modal-copy">All critical sound events also appear as on-screen captions. This prototype uses generated audio only—no external audio files are required.</p>
@@ -120,6 +145,7 @@
           <p>Mouse control is released. Resume when you are ready.</p>
           <button id="resume-button" class="primary-button">RESUME <span>↗</span></button>
           <button id="how-to-play-button" class="text-button">HOW TO PLAY — read the briefing</button>
+          <button id="tutorial-pause-exit" class="text-button hidden" type="button">EXIT TRAINING</button>
           <button id="restart-from-pause" class="text-button">Abandon match &amp; start again</button>
           <p class="modal-copy">Press <kbd>H</kbd> at any time to reopen the briefing.</p>
         </div>
@@ -148,6 +174,30 @@
           <div id="report-grid" class="report-grid"></div>
           <button id="play-again-button" class="primary-button">RUN ANOTHER INCIDENT <span>↗</span></button>
           <p class="start-note">Every match selects a new killer, objective route, and incident pattern.</p>
+        </div>
+      </section>
+
+      <section id="tutorial-complete-screen" class="screen result-screen hidden" aria-modal="true" role="dialog" aria-labelledby="tutorial-complete-heading">
+        <div class="result-content tutorial-complete-content">
+          <p class="eyebrow glowing">TRAINING COMPLETE</p>
+          <h2 id="tutorial-complete-heading">YOU ARE READY</h2>
+          <p id="tutorial-complete-copy">You now know how to survive the blacksite. In a real match, trust is earned — and one person is lying.</p>
+          <ul class="tutorial-checklist">
+            <li>Move and look</li>
+            <li>Sprint</li>
+            <li>Use the flashlight</li>
+            <li>Interact</li>
+            <li>Repair power</li>
+            <li>Collect and use defensive items</li>
+            <li>Find the keycard</li>
+            <li>Open the exit</li>
+            <li>Survive carefully</li>
+          </ul>
+          <div class="tutorial-complete-actions">
+            <button id="tutorial-start-match" class="primary-button">START A REAL MATCH <span>↗</span></button>
+            <button id="tutorial-repeat-button" class="secondary-button">REPEAT TUTORIAL</button>
+            <button id="tutorial-home-button" class="text-button">RETURN TO HOME</button>
+          </div>
         </div>
       </section>
 

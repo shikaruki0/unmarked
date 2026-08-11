@@ -7,15 +7,20 @@ import {
   BRIEFING_INTRO,
   BRIEFING_SECTIONS,
   BRIEFING_TITLE,
+  INTERACTIVE_TUTORIAL_TOTAL_STEPS,
+  advanceInteractiveTutorial,
   advanceTutorial,
   assignHiddenKiller,
   clamp,
+  createInteractiveTutorialState,
   createSeededRandom,
   createTutorialState,
   formatClock,
   getAliveCount,
   getObjectiveState,
   getSurvivorCount,
+  getTutorialInstruction,
+  isTutorialComplete,
   pickEnvironmentalEvent,
 } from './game-logic.js';
 import { disposeObjectTree } from './three-utils.js';
@@ -74,6 +79,20 @@ const dom = {
   touchInteract: $('#touch-interact'),
   touchAction: $('#touch-action'),
   touchFlashlight: $('#touch-flashlight'),
+  tutorialButton: $('#tutorial-button'),
+  tutorialCard: $('#tutorial-card'),
+  tutorialStep: $('#tutorial-step'),
+  tutorialTitle: $('#tutorial-title'),
+  tutorialCopy: $('#tutorial-copy'),
+  tutorialProgressFill: $('#tutorial-progress-fill'),
+  tutorialHint: $('#tutorial-hint'),
+  tutorialSkip: $('#tutorial-skip-button'),
+  tutorialExit: $('#tutorial-exit-button'),
+  tutorialComplete: $('#tutorial-complete-screen'),
+  tutorialStartMatch: $('#tutorial-start-match'),
+  tutorialRepeat: $('#tutorial-repeat-button'),
+  tutorialHome: $('#tutorial-home-button'),
+  tutorialPauseExit: $('#tutorial-pause-exit'),
 };
 
 const COLORS = {
@@ -291,6 +310,20 @@ class UnmarkedGame {
     this.tutorialState = createTutorialState();
     this.briefingLetter = null;
 
+    // Interactive tutorial (hands-on training): structured state avoids scattered flags
+    this.isTutorial = false;
+    this.interactiveTutorialState = null;
+    this.tutorialObjects = [];
+    this.tutorialTarget = null;
+    this.tutorialDummy = null;
+    this.tutorialGenerator = null;
+    this.tutorialKeycard = null;
+    this.tutorialTaser = null;
+    this.tutorialPipe = null;
+    this.tutorialPrevYaw = this.yaw;
+    this.tutorialPrevPitch = this.pitch;
+    this._tutorialSprintAccum = 0;
+
     this.player = {
       id: 'player',
       name: 'YOU',
@@ -352,12 +385,19 @@ class UnmarkedGame {
 
   bindEvents() {
     dom.start.addEventListener('click', () => this.startMatch());
+    if (dom.tutorialButton) dom.tutorialButton.addEventListener('click', () => this.startTutorial());
     dom.playAgain.addEventListener('click', () => this.startMatch());
     dom.pauseButton.addEventListener('click', () => this.pauseGame());
     dom.resume.addEventListener('click', () => this.resumeGame());
     dom.howToPlay.addEventListener('click', () => this.openBriefing());
     dom.briefingClose.addEventListener('click', () => this.closeBriefing());
     dom.restartFromPause.addEventListener('click', () => this.startMatch());
+    if (dom.tutorialPauseExit) dom.tutorialPauseExit.addEventListener('click', () => this.exitTutorialToHome());
+    if (dom.tutorialSkip) dom.tutorialSkip.addEventListener('click', () => this.exitTutorialToHome());
+    if (dom.tutorialExit) dom.tutorialExit.addEventListener('click', () => this.exitTutorialToHome());
+    if (dom.tutorialStartMatch) dom.tutorialStartMatch.addEventListener('click', () => this.startMatch());
+    if (dom.tutorialRepeat) dom.tutorialRepeat.addEventListener('click', () => this.startTutorial());
+    if (dom.tutorialHome) dom.tutorialHome.addEventListener('click', () => this.exitTutorialToHome());
     dom.accessibilityButton.addEventListener('click', () => dom.accessibility.classList.remove('hidden'));
     dom.closeAccessibility.addEventListener('click', () => dom.accessibility.classList.add('hidden'));
     dom.reducedMotion.addEventListener('change', () => {
@@ -375,8 +415,14 @@ class UnmarkedGame {
     document.addEventListener('mousemove', (event) => {
       if (document.pointerLockElement !== dom.canvas || this.phase !== 'playing') return;
       const modifier = this.settings.reducedMotion ? 0.00095 : 0.00175;
+      const prevYaw = this.yaw;
+      const prevPitch = this.pitch;
       this.yaw -= event.movementX * modifier;
       this.pitch = clamp(this.pitch - event.movementY * modifier, -1.25, 1.08);
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 1) {
+        const delta = Math.abs(this.yaw - prevYaw) + Math.abs(this.pitch - prevPitch);
+        if (delta > 0.001) this.signalInteractiveTutorial({ type: 'cameraMoved', delta });
+      }
     });
     document.addEventListener('pointerlockchange', () => {
       if (document.pointerLockElement === dom.canvas) {
@@ -433,10 +479,16 @@ class UnmarkedGame {
       if (event.pointerId !== this.touchLook.pointerId || this.phase !== 'playing') return;
       event.preventDefault();
       const sensitivity = this.settings.reducedMotion ? 0.0024 : 0.0034;
+      const prevYaw = this.yaw;
+      const prevPitch = this.pitch;
       this.yaw -= (event.clientX - this.touchLook.x) * sensitivity;
       this.pitch = clamp(this.pitch - (event.clientY - this.touchLook.y) * sensitivity, -1.25, 1.08);
       this.touchLook.x = event.clientX;
       this.touchLook.y = event.clientY;
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 1) {
+        const delta = Math.abs(this.yaw - prevYaw) + Math.abs(this.pitch - prevPitch);
+        if (delta > 0.001) this.signalInteractiveTutorial({ type: 'cameraMoved', delta });
+      }
     });
     const endLook = (event) => { if (event.pointerId === this.touchLook.pointerId) this.touchLook.pointerId = null; };
     dom.canvas.addEventListener('pointerup', endLook);
@@ -445,6 +497,11 @@ class UnmarkedGame {
     const holdInteract = (event) => {
       stop(event);
       if (this.phase !== 'playing') return;
+      // Tutorial trust lesson: USE also acknowledges
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11) {
+        this.signalInteractiveTutorial({ type: 'trustAcknowledged' });
+        return;
+      }
       this.keys.add('KeyE');
       this.beginInteraction();
       dom.touchInteract.classList.add('pressed');
@@ -464,6 +521,9 @@ class UnmarkedGame {
       this.flashlightOn = !this.flashlightOn;
       this.showSubtitle(this.flashlightOn ? 'Flashlight on.' : 'Flashlight off.', 1050);
       this.audio.cue(this.flashlightOn ? 'pickup' : 'sabotage');
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 4) {
+        this.signalInteractiveTutorial({ type: 'flashlightToggled', on: this.flashlightOn });
+      }
     });
   }
 
@@ -486,12 +546,20 @@ class UnmarkedGame {
       return;
     }
     if (this.phase !== 'playing' || event.repeat) return;
+    // Tutorial trust lesson: any E acknowledges
+    if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11 && event.code === 'KeyE') {
+      this.signalInteractiveTutorial({ type: 'trustAcknowledged' });
+      return;
+    }
     if (event.code === 'KeyE') this.beginInteraction();
     if (event.code === 'KeyF') this.useAction();
     if (event.code === 'KeyQ') {
       this.flashlightOn = !this.flashlightOn;
       this.showSubtitle(this.flashlightOn ? 'Flashlight on.' : 'Flashlight off.', 1050);
       this.audio.cue(this.flashlightOn ? 'pickup' : 'sabotage');
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 4) {
+        this.signalInteractiveTutorial({ type: 'flashlightToggled', on: this.flashlightOn });
+      }
     }
   }
 
@@ -511,6 +579,16 @@ class UnmarkedGame {
     this.touchMove.y = 0;
     dom.touchStickKnob.style.transform = 'translate(0, 0)';
     dom.pause.classList.remove('hidden');
+    // Tutorial pause shows EXIT TRAINING, hides abandon match during training
+    if (dom.tutorialPauseExit) {
+      if (this.isTutorial) {
+        dom.tutorialPauseExit.classList.remove('hidden');
+        dom.restartFromPause.classList.add('hidden');
+      } else {
+        dom.tutorialPauseExit.classList.add('hidden');
+        dom.restartFromPause.classList.remove('hidden');
+      }
+    }
     if (!fromPointerChange && document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
   }
 
@@ -589,6 +667,7 @@ class UnmarkedGame {
       this.phase = 'briefing';
       if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
       this.signalTutorial('letterOpened');
+      if (this.isTutorial) this.signalInteractiveTutorial({ type: 'letterOpened' });
     }
     dom.briefing.classList.remove('hidden');
     dom.briefingClose.focus();
@@ -604,6 +683,7 @@ class UnmarkedGame {
       this.phase = 'playing';
       this.requestPointerLock();
       this.signalTutorial('letterClosed');
+      if (this.isTutorial) this.signalInteractiveTutorial({ type: 'letterClosed' });
     }
     this.audio.cue('pickup');
   }
@@ -611,7 +691,134 @@ class UnmarkedGame {
   signalTutorial(type) {
     const result = advanceTutorial(this.tutorialState, { type });
     this.tutorialState = result.state;
-    if (result.message && this.phase === 'playing') this.showSubtitle(result.message, 3800);
+    if (result.message && this.phase === 'playing' && !this.isTutorial) this.showSubtitle(result.message, 3800);
+  }
+
+  signalInteractiveTutorial(signal) {
+    if (!this.isTutorial || !this.interactiveTutorialState) return;
+    const before = this.interactiveTutorialState.step;
+    const result = advanceInteractiveTutorial(this.interactiveTutorialState, signal);
+    this.interactiveTutorialState = result.state;
+    if (result.advanced) {
+      this.refreshTutorialCard();
+      // Light feedback for each step
+      if (this.interactiveTutorialState.step === 12 || this.interactiveTutorialState.complete) {
+        // Delay to let final subtitle finish before showing complete screen
+        if (this.interactiveTutorialState.step === 12 && !this.interactiveTutorialState.complete && signal.type === 'trustAcknowledged') {
+          this.showSubtitle('Trust your eyes. Verify everything.', 2600);
+          window.setTimeout(() => {
+            if (!this.isTutorial) return;
+            this.interactiveTutorialState.complete = true;
+            this.refreshTutorialCard();
+            this.completeInteractiveTutorial();
+          }, 900);
+        } else if (this.interactiveTutorialState.step === 12) {
+          this.completeInteractiveTutorial();
+        } else {
+          this.audio.cue('pickup');
+          this.showSubtitle(`Training step ${before} complete.`, 1600);
+        }
+      } else {
+        this.audio.cue('pickup');
+        const hint = getTutorialInstruction(this.interactiveTutorialState, this.isTouchDevice).hint;
+        if (hint) this.showSubtitle(hint, 2200);
+      }
+      // Highlight next objective if needed (glow already handled)
+      this.highlightTutorialObjective();
+    }
+  }
+
+  refreshTutorialCard() {
+    if (!this.isTutorial || !this.interactiveTutorialState || !dom.tutorialCard) return;
+    const info = getTutorialInstruction(this.interactiveTutorialState, this.isTouchDevice);
+    const total = INTERACTIVE_TUTORIAL_TOTAL_STEPS;
+    dom.tutorialStep.textContent = `${info.step} / ${total}`;
+    dom.tutorialTitle.textContent = info.title.toUpperCase();
+    dom.tutorialCopy.textContent = info.instruction;
+    dom.tutorialHint.textContent = info.hint || '';
+    const progress = ((info.step - 1) / total) * 100;
+    // For complete, fill fully
+    dom.tutorialProgressFill.style.width = `${this.interactiveTutorialState.complete ? 100 : progress}%`;
+    // Keep card visible unless tutorial complete screen is up
+    if (!this.interactiveTutorialState.complete) {
+      dom.tutorialCard.classList.remove('hidden');
+      dom.objectiveCard.classList.add('hidden');
+      dom.tutorialPauseExit?.classList.remove('hidden');
+    }
+  }
+
+  highlightTutorialObjective() {
+    if (!this.isTutorial || !this.interactiveTutorialState) return;
+    const step = this.interactiveTutorialState.step;
+    // Pulse the relevant object's light/material for the current step
+    const pulse = (obj, intensity) => {
+      if (!obj || !obj.glowLight) return;
+      obj.glowLight.intensity = intensity;
+    };
+    // Reset subtle pulsing handled in update loop; this just nudges.
+    if (step === 3 && this.briefingLetter) pulse(this.briefingLetter, 1.4);
+    if (step === 6 && this.tutorialGenerator) {
+      this.tutorialGenerator.light.intensity = 1.1;
+      this.tutorialGenerator.panel.material.emissiveIntensity = 2.2;
+    }
+    if (step === 7 && this.tutorialTaser) {
+      if (this.tutorialTaser.group) this.tutorialTaser.group.visible = true;
+    }
+  }
+
+  completeInteractiveTutorial() {
+    if (!this.isTutorial) return;
+    // Hide tutorial card, pause gameplay, show completion overlay
+    dom.tutorialCard.classList.add('hidden');
+    dom.tutorialPauseExit?.classList.add('hidden');
+    dom.tutorialComplete.classList.remove('hidden');
+    this.phase = 'paused';
+    document.body.classList.remove('in-tutorial');
+    document.body.classList.remove('in-match');
+    if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
+    this.showSubtitle('TRAINING COMPLETE — You are ready.', 4200);
+    this.audio.cue('complete');
+    // Ensure touch controls reset
+    this.keys.clear();
+    this.touchMove.x = 0; this.touchMove.y = 0;
+    if (dom.touchStickKnob) dom.touchStickKnob.style.transform = 'translate(0, 0)';
+  }
+
+  exitTutorialToHome() {
+    // Clean up tutorial and return to home/menu without leaking resources
+    this.isTutorial = false;
+    this.interactiveTutorialState = null;
+    this.tutorialObjects = [];
+    this.tutorialTarget = null;
+    this.tutorialDummy = null;
+    this.tutorialGenerator = null;
+    this.tutorialKeycard = null;
+    this.tutorialTaser = null;
+    this.tutorialPipe = null;
+    if (dom.tutorialCard) dom.tutorialCard.classList.add('hidden');
+    if (dom.tutorialComplete) dom.tutorialComplete.classList.add('hidden');
+    dom.objectiveCard.classList.remove('hidden');
+    dom.tutorialPauseExit?.classList.add('hidden');
+    document.body.classList.remove('in-tutorial');
+    document.body.classList.remove('in-match');
+    this.clearMatch();
+    dom.hud.classList.add('hidden');
+    dom.intro.classList.remove('hidden');
+    dom.pause.classList.add('hidden');
+    dom.result.classList.add('hidden');
+    dom.briefing.classList.add('hidden');
+    this.briefingOpen = false;
+    this.phase = 'menu';
+    this.keys.clear();
+    this.touchMove.x = 0; this.touchMove.y = 0;
+    if (dom.touchStickKnob) dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    this.yaw = Math.PI;
+    this.pitch = -0.06;
+    this.updateCamera();
+    this.flashlightOn = true;
+    this.player.health = 100; this.player.stamina = 100; this.player.held = null;
+    // Return page scroll to safe state
+    window.scrollTo(0,0);
   }
 
   resize() {
@@ -837,6 +1044,24 @@ class UnmarkedGame {
     this.briefingLetter = null;
     this.tutorialState = createTutorialState();
     this.briefingOpen = false;
+    // Tutorial-managed objects are owned by matchGroup so they are already disposed,
+    // but clear references to avoid leaks between tutorial and normal matches.
+    this.tutorialObjects = [];
+    this.tutorialTarget = null;
+    this.tutorialDummy = null;
+    this.tutorialGenerator = null;
+    this.tutorialKeycard = null;
+    this.tutorialTaser = null;
+    this.tutorialPipe = null;
+    this.tutorialPrevYaw = this.yaw;
+    this.tutorialPrevPitch = this.pitch;
+    this._tutorialSprintAccum = 0;
+    if (!this.isTutorial) {
+      if (dom.tutorialCard) dom.tutorialCard.classList.add('hidden');
+      if (dom.tutorialComplete) dom.tutorialComplete.classList.add('hidden');
+      dom.objectiveCard.classList.remove('hidden');
+      if (dom.tutorialPauseExit) dom.tutorialPauseExit.classList.add('hidden');
+    }
     dom.briefing.classList.add('hidden');
     if (this.subtitleTimer) {
       window.clearTimeout(this.subtitleTimer);
@@ -847,7 +1072,60 @@ class UnmarkedGame {
     dom.subtitle.textContent = '';
   }
 
+  startTutorial() {
+    this.isTutorial = true;
+    this.clearMatch();
+    this.matchEpoch += 1;
+    this.random = createSeededRandom(1337);
+    this.matchTime = 0;
+    this.nextEventAt = 9999;
+    this.phase = 'playing';
+    this.player = {
+      id: 'player',
+      name: 'YOU',
+      role: 'survivor',
+      position: new THREE.Vector3(0, 0, 16),
+      alive: true,
+      escaped: false,
+      health: 100,
+      stamina: 100,
+      held: null,
+      hidden: false,
+      interaction: null,
+      actionCooldown: 0,
+    };
+    this.yaw = Math.PI;
+    this.pitch = -0.06;
+    this.tutorialPrevYaw = this.yaw;
+    this.tutorialPrevPitch = this.pitch;
+    this.cameraShake = 0;
+    this.flashlightOn = true;
+    this.interactiveTutorialState = createInteractiveTutorialState();
+    this.createTutorialObjects();
+    this.updateRoleCard();
+    this.updateCamera();
+    this.scene.fog.density = 0.026;
+    this.ambientLight.intensity = 0.32;
+    this.keys.clear();
+    dom.intro.classList.add('hidden');
+    dom.accessibility.classList.add('hidden');
+    dom.pause.classList.add('hidden');
+    dom.result.classList.add('hidden');
+    if (dom.tutorialComplete) dom.tutorialComplete.classList.add('hidden');
+    dom.hud.classList.remove('hidden');
+    document.body.classList.add('in-tutorial');
+    document.body.classList.add('in-match');
+    this.refreshTutorialCard();
+    this.logEvent('TRAINING PROTOCOL ACTIVE — Learn by doing.', 'warning');
+    this.showSubtitle(getTutorialInstruction(this.interactiveTutorialState, this.isTouchDevice).instruction, 3800);
+    this.audio.start();
+    this.audio.cue('pickup');
+    this.requestPointerLock();
+  }
+
   startMatch() {
+    this.isTutorial = false;
+    this.interactiveTutorialState = null;
     this.clearMatch();
     this.matchEpoch += 1;
     this.random = createSeededRandom((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0);
@@ -884,7 +1162,12 @@ class UnmarkedGame {
     dom.accessibility.classList.add('hidden');
     dom.pause.classList.add('hidden');
     dom.result.classList.add('hidden');
+    if (dom.tutorialComplete) dom.tutorialComplete.classList.add('hidden');
+    if (dom.tutorialCard) dom.tutorialCard.classList.add('hidden');
+    dom.objectiveCard.classList.remove('hidden');
     dom.hud.classList.remove('hidden');
+    document.body.classList.remove('in-tutorial');
+    document.body.classList.add('in-match');
     this.logEvent('Facility lock confirmed. Emergency protocol is live.', 'warning');
     this.logEvent('No emergency meetings. No role reveals.', 'danger');
     this.showSubtitle(
@@ -915,6 +1198,81 @@ class UnmarkedGame {
       new THREE.Vector3(6.2, 0, 12), new THREE.Vector3(-1.2, 0, 8), new THREE.Vector3(4.1, 0, 4), new THREE.Vector3(-4.2, 0, 4),
     ];
     BOT_NAMES.forEach((name, index) => this.createBot(name, index, killerId === name ? 'killer' : 'survivor', spawnPoints[index]));
+  }
+
+  createTutorialObjects() {
+    // Reuse existing environment: single desk, one tutorial generator near lobby, det. placement
+    this.createBriefingDesk();
+    this.generators = [
+      this.createGenerator(ZONES.generatorA, 1),
+      this.createGenerator(ZONES.generatorB, 2),
+      this.createGenerator(ZONES.generatorC, 3),
+    ];
+    // Designate generatorA as the controlled tutorial node: easy to locate near center-lobby approach
+    this.tutorialGenerator = this.generators[0];
+    // Move tutorial generator slightly closer to lobby for accessibility but keep zone access valid
+    // The generator itself stays at its zone; we just ensure AI will ignore it.
+    this.createKeycard();
+    // Tutorial taser near lobby, and pipe nearby, plus training target/dummy
+    // Place tutorial pickups deterministically near player start (0,0,16)
+    const taserPos = new THREE.Vector3(5.5, 0, 10.5);
+    this.createPickup('taser', taserPos);
+    this.tutorialTaser = this.pickups[this.pickups.length - 1];
+    const pipePos = new THREE.Vector3(-5.5, 0, 10.5);
+    this.createPickup('pipe', pipePos);
+    this.tutorialPipe = this.pickups[this.pickups.length - 1];
+    // Training target for taser (safe AI volunteer) just beyond taser
+    this.createTrainingTarget(new THREE.Vector3(7.8, 0, 10.5));
+    // Training dummy for pipe (nonliving)
+    this.createTrainingDummy(new THREE.Vector3(-7.8, 0, 10.5));
+    // Bots: all survivors, non-aggressive, will wander but not attack or repair tutorial node
+    const spawnPoints = [
+      new THREE.Vector3(-2.5, 0, 13.5), new THREE.Vector3(2.5, 0, 13.5), new THREE.Vector3(-6.5, 0, 11),
+      new THREE.Vector3(6.2, 0, 12), new THREE.Vector3(-1.2, 0, 8), new THREE.Vector3(4.1, 0, 4), new THREE.Vector3(-4.2, 0, 4),
+    ];
+    BOT_NAMES.forEach((name, index) => this.createBot(name, index, 'survivor', spawnPoints[index]));
+    // Make bots slightly idle in tutorial: double their goalUntil so they wander less aggressively
+    for (const bot of this.bots) bot.goalUntil = this.matchTime + 12 + Math.random() * 6;
+  }
+
+  createTrainingTarget(position) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 1.7, 10), new THREE.MeshStandardMaterial({ color: 0x3a4b47, roughness: 0.72, metalness: 0.18 }));
+    base.position.y = 0.85; base.castShadow = true;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), new THREE.MeshStandardMaterial({ color: 0xc9a88a, roughness: 0.85 }));
+    head.position.y = 1.92;
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.52, 0.32), new THREE.MeshStandardMaterial({ color: 0xf7bd4e, emissive: 0x7a4a00, emissiveIntensity: 0.6 }));
+    plate.position.set(0, 1.18, 0.28);
+    group.add(base, head, plate);
+    const aura = new THREE.PointLight(COLORS.amber, 0.65, 4, 2);
+    aura.position.y = 1.0;
+    group.add(aura);
+    const label = makeLabelSprite('TRAINING TARGET', '#ffe7ae', 0.54);
+    label.position.set(0, 2.55, 0);
+    group.add(label);
+    this.matchGroup.add(group);
+    this.tutorialObjects.push(group);
+    this.tutorialTarget = { type: 'trainingTarget', position: group.position, group, aura, stunnedUntil: 0, label };
+  }
+
+  createTrainingDummy(position) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.6, 0.32), new THREE.MeshStandardMaterial({ color: 0x6b5b4a, roughness: 0.88, metalness: 0.08 }));
+    post.position.y = 0.8; post.castShadow = true;
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.14, 0.14), new THREE.MeshStandardMaterial({ color: 0x8b8b80, roughness: 0.7, metalness: 0.26 }));
+    cross.position.y = 1.18;
+    group.add(post, cross);
+    const aura = new THREE.PointLight(0xa8c4be, 0.45, 3, 2);
+    aura.position.y = 0.9;
+    group.add(aura);
+    const label = makeLabelSprite('TRAINING DUMMY', '#a4ffcf', 0.52);
+    label.position.set(0, 2.4, 0);
+    group.add(label);
+    this.matchGroup.add(group);
+    this.tutorialObjects.push(group);
+    this.tutorialDummy = { type: 'trainingDummy', position: group.position, group, aura, label };
   }
 
   /**
@@ -1135,7 +1493,7 @@ class UnmarkedGame {
     this.updatePlayerInteraction(delta);
     this.updateBots(delta);
     this.updateEnvironment(delta);
-    this.updateTutorial();
+    this.updateTutorial(delta);
     this.updateEffects(delta);
     this.updatePrompts();
     this.updateHud();
@@ -1146,8 +1504,60 @@ class UnmarkedGame {
   /**
    * Drives the non-blocking tutorial hints and the letter's gentle pulse.
    * Each hint fires once per match; the pulse is steady in reduced-motion mode.
+   * In tutorial mode, handles deterministic training highlights and suppresses
+   * normal random hints.
    */
-  updateTutorial() {
+  updateTutorial(delta) {
+    // Tutorial mode: lightweight deterministic highlights, no random hints or events
+    if (this.isTutorial && this.interactiveTutorialState) {
+      // Pulse briefing letter gently (reduced motion = steady)
+      if (this.briefingLetter) {
+        const reduced = this.settings.reducedMotion;
+        const pulse = reduced ? 1 : 0.68 + Math.sin(this.matchTime * 2.7) * 0.32;
+        this.briefingLetter.glowLight.intensity = 0.5 + pulse * 0.5;
+        this.briefingLetter.paperMaterial.emissiveIntensity = 0.22 + pulse * 0.26;
+      }
+      // Tutorial objective highlights: glow the relevant object for current step
+      const step = this.interactiveTutorialState.step;
+      const timePulse = this.settings.reducedMotion ? 0.9 : 0.7 + Math.sin(this.matchTime * 2.1) * 0.28;
+      if (this.tutorialGenerator && step === 6) {
+        this.tutorialGenerator.light.intensity = 0.6 + timePulse * 0.7;
+        this.tutorialGenerator.panel.material.emissiveIntensity = 1.2 + timePulse * 1.0;
+      }
+      if (this.tutorialTaser && step === 7) {
+        const aura = this.tutorialTaser.group.children.find(c => c.isPointLight);
+        if (aura) aura.intensity = 0.45 + timePulse * 0.45;
+        // Gentle vertical bounce
+        this.tutorialTaser.group.position.y = Math.sin(this.matchTime * 1.9) * 0.04;
+      }
+      if (this.tutorialTarget && step === 7) {
+        this.tutorialTarget.aura.intensity = 0.5 + timePulse * 0.6;
+        this.tutorialTarget.group.rotation.y = Math.sin(this.matchTime * 0.9) * 0.12;
+      }
+      if (this.tutorialDummy && step === 8) {
+        this.tutorialDummy.aura.intensity = 0.45 + timePulse * 0.45;
+      }
+      if (this.keycard && step === 9 && this.keycard.active) {
+        // keycard already has its own bounce in updateEnvironment, add extra glow
+        const cardGlow = this.keycard.group.children.find(c => c.isPointLight);
+        if (cardGlow) cardGlow.intensity = 0.7 + timePulse * 0.5;
+      }
+      if (this.tutorialTarget && this.tutorialTarget.stunnedUntil > this.matchTime) {
+        this.tutorialTarget.group.position.y = 0.15 + Math.sin(this.matchTime * 12) * 0.03;
+      }
+      // Auto-hint for trust lesson after exit
+      if (step === 11 && !this.interactiveTutorialState.trustAcknowledged) {
+        // Show sequential trust lesson subtitles at intervals
+        const t = this.matchTime % 9;
+        if (t < 0.1) this.showSubtitle('In a real match, one person is secretly the killer.', 2800);
+        else if (t > 3 && t < 3.1) this.showSubtitle('Observe behavior. Investigate evidence. Choose carefully who you trust.', 2800);
+        else if (t > 6 && t < 6.1) this.showSubtitle('There are no meetings, votes, or guaranteed role reveals.', 2800);
+      }
+      // Update tutorial card progress (in case step changed via other signals)
+      if (delta) this.refreshTutorialCard();
+      return;
+    }
+    // Normal match contextual hints
     if (this.tutorialState.letterHintShown === false && this.tutorialState.letterOpenedCount === 0 && this.matchTime > 5.0) {
       this.signalTutorial('spawn');
     }
@@ -1182,6 +1592,7 @@ class UnmarkedGame {
     if (sprinting) this.player.stamina = Math.max(0, this.player.stamina - 30 * delta);
     else this.player.stamina = Math.min(100, this.player.stamina + 17 * delta);
 
+    let movedDistance = 0;
     if (!this.player.hidden && movingInput && !this.player.interaction) {
       const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
       const right = new THREE.Vector3(-forward.z, 0, forward.x);
@@ -1196,10 +1607,22 @@ class UnmarkedGame {
       }
       if (direction.lengthSq() > 0) {
         direction.normalize().multiplyScalar(speed * delta);
+        const beforeX = this.player.position.x, beforeZ = this.player.position.z;
         this.moveWithCollision(this.player.position, direction.x, direction.z, 0.42);
+        movedDistance = Math.hypot(this.player.position.x - beforeX, this.player.position.z - beforeZ);
       }
     }
     this.updateCamera();
+    // Tutorial step signals
+    if (this.isTutorial && this.interactiveTutorialState) {
+      const st = this.interactiveTutorialState.step;
+      if (st === 2 && movedDistance > 0.001) {
+        this.signalInteractiveTutorial({ type: 'moved', distance: movedDistance });
+      }
+      if (st === 5 && sprinting && movedDistance > 0.001) {
+        this.signalInteractiveTutorial({ type: 'sprinting', delta, sprinting: true });
+      }
+    }
   }
 
   updateCamera() {
@@ -1235,20 +1658,41 @@ class UnmarkedGame {
       if (locker) this.toggleLocker(locker);
       return;
     }
+    // Tutorial trust lesson ack via E
+    if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11) {
+      this.signalInteractiveTutorial({ type: 'trustAcknowledged' });
+      return;
+    }
     const target = this.getNearestInteractable();
-    if (!target) return;
+    if (!target) {
+      // In tutorial step 8, allow viewing pipe explanation even if pickups are a bit farther
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 8) {
+        const dPipe = this.tutorialPipe ? vecDistance(this.player.position, this.tutorialPipe.position) : 999;
+        const dDummy = this.tutorialDummy ? vecDistance(this.player.position, this.tutorialDummy.position) : 999;
+        if (Math.min(dPipe, dDummy) < 3.2) {
+          this.showSubtitle('The pipe is dangerous. Harming an innocent causes serious consequences. Violence is a last resort. Tap ACT near the dummy to try safely.', 4200);
+          this.signalInteractiveTutorial({ type: 'pipeAcknowledged' });
+          return;
+        }
+      }
+      return;
+    }
     const { type, ref } = target;
     if (type === 'letter') {
       this.openBriefing();
       return;
     }
     if (type === 'generator') {
-      if (ref.repaired && this.player.role === 'killer') {
+      if (ref.repaired && this.player.role === 'killer' && !this.isTutorial) {
         this.player.interaction = { type: 'sabotage', ref, duration: 1.5, elapsed: 0 };
         this.showSubtitle('Hold E to overload the power node.', 1100);
       } else if (!ref.repaired) {
-        this.player.interaction = { type: 'repair', ref, duration: this.player.role === 'killer' ? 5.2 : 3.75, elapsed: 0 };
-        this.showSubtitle(this.player.role === 'killer' ? 'Hold E to pretend to repair the power node.' : 'Hold E to repair the power node.', 1100);
+        // Tutorial: slightly faster repair for training node
+        const isTutorialGen = this.isTutorial && ref === this.tutorialGenerator;
+        const duration = isTutorialGen ? 2.4 : (this.player.role === 'killer' ? 5.2 : 3.75);
+        this.player.interaction = { type: 'repair', ref, duration, elapsed: 0 };
+        const prompt = this.isTutorial && isTutorialGen ? 'Hold to repair the training power node.' : (this.player.role === 'killer' ? 'Hold E to pretend to repair the power node.' : 'Hold E to repair the power node.');
+        this.showSubtitle(prompt, 1100);
       } else {
         this.showSubtitle('The power node is online.', 1000);
       }
@@ -1260,6 +1704,11 @@ class UnmarkedGame {
     if (type === 'evidence') this.inspectEvidence(ref);
     if (type === 'terminal') this.inspectTerminal();
     if (type === 'locker') this.toggleLocker(ref);
+    if (type === 'trainingDummy') {
+      this.showSubtitle('The pipe is dangerous. Harming an innocent causes serious consequences. Violence is a last resort.', 3600);
+      this.signalInteractiveTutorial({ type: 'pipeAcknowledged' });
+      return;
+    }
   }
 
   updatePlayerInteraction(delta) {
@@ -1295,8 +1744,24 @@ class UnmarkedGame {
     this.audio.cue('complete');
     this.logEvent(`PWR-${String(generator.index).padStart(2, '0')} comes online.`, 'normal');
     this.showSubtitle(actor === 'YOU' ? 'Power node stabilized.' : 'A generator hums to life nearby.', 1800);
-    if (firstCompletion) this.signalTutorial('firstGeneratorDone');
-    if (this.generators.every((node) => node.repaired) && !this.securityUnlocked) {
+    if (!this.isTutorial && firstCompletion) this.signalTutorial('firstGeneratorDone');
+    if (this.isTutorial && actor === 'YOU' && generator === this.tutorialGenerator) {
+      this.signalInteractiveTutorial({ type: 'generatorRepaired', byPlayer: true });
+      // Tutorial unlocks security after ONE node
+      if (!this.securityUnlocked) {
+        this.securityUnlocked = true;
+        if (this.keycard) {
+          this.keycard.active = true;
+          this.keycard.group.visible = true;
+          this.keycard.group.position.set(23.1, 1.45, 19.2);
+        }
+        this.logEvent('Training: Security office unlocked: exit keycard available.', 'warning');
+        this.showSubtitle('Training: Emergency power restored. Find the keycard inside Security.', 3200);
+        this.audio.cue('alarm');
+      }
+      return;
+    }
+    if (!this.isTutorial && this.generators.every((node) => node.repaired) && !this.securityUnlocked) {
       this.securityUnlocked = true;
       this.keycard.active = true;
       this.keycard.group.visible = true;
@@ -1323,6 +1788,8 @@ class UnmarkedGame {
 
   takeKeycard(actor) {
     if (!this.keycard?.active || this.keycard.taken) return;
+    // In tutorial, only player collection counts for progress; bots should not take it
+    if (this.isTutorial && actor !== 'YOU') return;
     this.keycard.taken = true;
     this.keycardTaken = true;
     this.keycard.group.visible = false;
@@ -1330,10 +1797,29 @@ class UnmarkedGame {
     this.createPulse(this.keycard.position, COLORS.aqua, 1.7);
     this.logEvent('Exit keycard removed from the security office.', 'warning');
     this.showSubtitle(actor === 'YOU' ? 'Exit keycard acquired. Reach the quarantine door.' : 'A security lock clicks open somewhere in the facility.', 2600);
-    this.signalTutorial('keycardTaken');
+    if (!this.isTutorial) this.signalTutorial('keycardTaken');
+    if (this.isTutorial && actor === 'YOU') this.signalInteractiveTutorial({ type: 'keycardCollected', byPlayer: true });
   }
 
   useExit(actor) {
+    // Tutorial: controlled escape, no normal win, teach keycard->exit flow
+    if (this.isTutorial) {
+      if (actor !== 'YOU') return;
+      if (!this.keycardTaken) {
+        this.showSubtitle('QUARANTINE LOCK: exit keycard required.', 1500);
+        this.audio.cue('sabotage');
+        return;
+      }
+      if (!this.exitOpen) {
+        this.exitOpen = true;
+        this.audio.cue('alarm');
+        this.logEvent('Training: Quarantine exit authorization accepted.', 'warning');
+        this.showSubtitle('The quarantine door is opening.', 1900);
+      }
+      this.signalInteractiveTutorial({ type: 'exitReached', byPlayer: true });
+      // Do not call escapePlayer; tutorial handles completion via trust lesson
+      return;
+    }
     if (this.player.role === 'killer' && actor === 'YOU') {
       this.showSubtitle('The exit is not your objective. No witnesses can leave.', 1700);
       return;
@@ -1364,8 +1850,19 @@ class UnmarkedGame {
     this.player.held = pickup.kind;
     this.audio.cue('pickup');
     this.logEvent(`You took a ${pickup.kind === 'taser' ? 'taser' : 'metal pipe'}.`, 'warning');
-    this.showSubtitle(pickup.kind === 'pipe' ? 'A pipe can kill the wrong person. Choose carefully.' : 'One charge. It may buy you a few seconds.', 2500);
-    this.signalTutorial('defenseCollected');
+    if (this.isTutorial) {
+      if (pickup.kind === 'taser') {
+        this.showSubtitle('Taser acquired. Find the TRAINING TARGET and use ACT / F to stun it.', 3000);
+        this.signalInteractiveTutorial({ type: 'taserCollected' });
+      } else if (pickup.kind === 'pipe') {
+        this.showSubtitle('The pipe is dangerous. Harming an innocent causes serious consequences. Violence is a last resort.', 3800);
+        // Pipe collection counts as viewing the lesson (optional dummy swing also works)
+        this.signalInteractiveTutorial({ type: 'pipeAcknowledged' });
+      }
+    } else {
+      this.showSubtitle(pickup.kind === 'pipe' ? 'A pipe can kill the wrong person. Choose carefully.' : 'One charge. It may buy you a few seconds.', 2500);
+      this.signalTutorial('defenseCollected');
+    }
   }
 
   inspectEvidence(evidence) {
@@ -1457,6 +1954,11 @@ class UnmarkedGame {
       const distance = vecDistance(this.player.position, locker.position);
       if (distance < 1.75) choices.push({ type: 'locker', ref: locker, distance });
     }
+    // Tutorial extras: dummy for pipe lesson
+    if (this.isTutorial && this.tutorialDummy) {
+      const d = vecDistance(this.player.position, this.tutorialDummy.position);
+      if (d < 2.2) choices.push({ type: 'trainingDummy', ref: this.tutorialDummy, distance: d });
+    }
     choices.sort((a, b) => a.distance - b.distance);
     return choices[0] || null;
   }
@@ -1466,9 +1968,9 @@ class UnmarkedGame {
     const { type, ref } = target;
     if (type === 'letter') return 'E — READ INCIDENT BRIEFING';
     if (type === 'generator') {
-      if (ref.repaired && this.player.role === 'killer') return 'HOLD E — SABOTAGE POWER NODE';
+      if (ref.repaired && this.player.role === 'killer' && !this.isTutorial) return 'HOLD E — SABOTAGE POWER NODE';
       if (ref.repaired) return 'POWER NODE ONLINE';
-      return this.player.role === 'killer' ? 'HOLD E — PRETEND TO REPAIR' : 'HOLD E — REPAIR POWER NODE';
+      return this.player.role === 'killer' && !this.isTutorial ? 'HOLD E — PRETEND TO REPAIR' : 'HOLD E — REPAIR POWER NODE';
     }
     if (type === 'keycard') return 'E — TAKE EXIT KEYCARD';
     if (type === 'exit') return this.keycardTaken ? 'E — OPEN EXIT / ESCAPE' : 'EXIT LOCKED — KEYCARD REQUIRED';
@@ -1476,11 +1978,70 @@ class UnmarkedGame {
     if (type === 'evidence') return 'E — INVESTIGATE EVIDENCE';
     if (type === 'terminal') return 'E — REVIEW SECURITY FEED';
     if (type === 'locker') return 'E — HIDE IN LOCKER';
+    if (type === 'trainingDummy') return 'E — LEARN ABOUT THE PIPE';
     return null;
   }
 
   useAction() {
     if (this.phase !== 'playing' || this.player.actionCooldown > this.matchTime || !this.player.alive || this.player.hidden) return;
+    // Tutorial branch: safe taser/pipe on training objects, no lethal consequences
+    if (this.isTutorial) {
+      const targetNearby = this.tutorialTarget ? vecDistance(this.player.position, this.tutorialTarget.position) < 2.6 : false;
+      const dummyNearby = this.tutorialDummy ? vecDistance(this.player.position, this.tutorialDummy.position) < 2.4 : false;
+      if (this.player.held === 'taser') {
+        if (targetNearby) {
+          this.player.held = null;
+          this.player.actionCooldown = this.matchTime + 0.8;
+          this.tutorialTarget.stunnedUntil = this.matchTime + 6;
+          this.createPulse(this.tutorialTarget.position, COLORS.amber, 1.7);
+          this.audio.cue('taser');
+          this.logEvent('Training target stunned. Nobody dies. The taser proves nothing about guilt.', 'warning');
+          this.showSubtitle('Target stunned safely. Tasers do not reveal the killer.', 2400);
+          this.signalInteractiveTutorial({ type: 'taserUsed', success: true });
+          return;
+        } else if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 7) {
+          this.showSubtitle('Move closer to the TRAINING TARGET (glowing amber marker) and try again.', 1800);
+          return;
+        }
+      }
+      if (this.player.held === 'pipe') {
+        if (dummyNearby) {
+          this.player.held = null;
+          this.player.actionCooldown = this.matchTime + 0.9;
+          this.createPulse(this.tutorialDummy.position, 0xa8c4be, 1.4);
+          this.audio.cue('attack');
+          this.showSubtitle('Safe swing on the training dummy. In a real match, harming an innocent has severe consequences.', 3200);
+          // Pipe lesson acknowledges even if player hasn't yet formally acknowledged via E
+          if (this.interactiveTutorialState && this.interactiveTutorialState.step === 8) this.signalInteractiveTutorial({ type: 'pipeAcknowledged' });
+          return;
+        } else {
+          // In tutorial, never allow killing a survivor with pipe
+          this.showSubtitle('Training: the pipe is dangerous. Use it only on the dummy for now.', 2000);
+          if (this.player.held === 'pipe') {
+            // Do not consume pipe or kill; just warn
+            return;
+          }
+        }
+      }
+      // Fallback for tutorial: if no held item or not near target, try normal bot taser but without penalty?
+      if (!this.player.held) {
+        this.showSubtitle(this.isTouchDevice ? 'You need a taser first. Look for the glowing pickup.' : 'You need a taser first.', 1400);
+        return;
+      }
+      // If tutorial taser used on a bot, just stun safely without advancing (only training target advances)
+      const nearestBot = this.getNearestBot(2.15);
+      if (nearestBot && this.player.held === 'taser') {
+        this.player.held = null;
+        this.player.actionCooldown = this.matchTime + 0.8;
+        nearestBot.stunUntil = this.matchTime + 5;
+        this.createPulse(nearestBot.position, COLORS.amber, 1.5);
+        this.audio.cue('taser');
+        this.showSubtitle('Training stun — the figure is dazed. For real progress, use the TRAINING TARGET.', 2200);
+        return;
+      }
+      this.showSubtitle('No training target in reach.', 900);
+      return;
+    }
     const nearest = this.getNearestBot(2.15);
     if (!nearest) {
       this.showSubtitle(this.player.role === 'killer' ? 'No one is close enough.' : 'No target in reach.', 850);
@@ -1589,7 +2150,9 @@ class UnmarkedGame {
     bot.routeEntered = false;
     bot.goalUntil = this.matchTime + 4.8 + this.random() * 5.5;
     if (!this.securityUnlocked) {
-      const offline = this.generators.filter((node) => !node.repaired);
+      let offline = this.generators.filter((node) => !node.repaired);
+      // Tutorial: bots must not repair the controlled training node; leave it for the player
+      if (this.isTutorial && this.tutorialGenerator) offline = offline.filter(n => n !== this.tutorialGenerator);
       if (offline.length && this.random() < 0.8) {
         offline.sort((a, b) => vecDistance(bot.position, a.position) - vecDistance(bot.position, b.position));
         const choice = this.random() < 0.62 ? offline[0] : randomFrom(this.random, offline);
@@ -1597,9 +2160,23 @@ class UnmarkedGame {
         return;
       }
     } else if (!this.keycardTaken && !pretending) {
+      // Tutorial: bots should not steal keycard
+      if (this.isTutorial) {
+        const wandering = [ZONES.lobby, ZONES.generatorA, ZONES.generatorB, ZONES.generatorC];
+        const choice = randomFrom(this.random, wandering);
+        bot.goal = { type: 'wander', ref: choice, position: choice.access, access: null };
+        return;
+      }
       bot.goal = { type: 'keycard', ref: this.keycard, position: this.keycard.position, access: ZONES.security.access };
       return;
     } else if (this.keycardTaken && !pretending) {
+      // Tutorial bots don't race to exit
+      if (this.isTutorial) {
+        const wandering = [ZONES.lobby, ZONES.generatorA, ZONES.generatorB, ZONES.generatorC];
+        const choice = randomFrom(this.random, wandering);
+        bot.goal = { type: 'wander', ref: choice, position: choice.access, access: null };
+        return;
+      }
       bot.goal = { type: 'exit', ref: ZONES.exit, position: ZONES.exit.position, access: ZONES.exit.access };
       return;
     }
@@ -1755,6 +2332,7 @@ class UnmarkedGame {
   }
 
   damagePlayer(amount, attacker) {
+    if (this.isTutorial) return;
     if (!this.player.alive) return;
     this.player.health -= amount;
     this.cameraShake = this.settings.reducedMotion ? 0 : 1;
@@ -1856,10 +2434,11 @@ class UnmarkedGame {
   }
 
   updateEnvironment(delta) {
-    if (this.matchTime >= this.nextEventAt) {
+    if (!this.isTutorial && this.matchTime >= this.nextEventAt) {
       this.triggerEnvironmentalEvent();
       this.nextEventAt = this.matchTime + 25 + this.random() * 22;
     }
+    if (this.isTutorial) this.nextEventAt = 9999;
     const blackout = this.blackoutUntil > this.matchTime;
     const foggy = this.fogSurgeUntil > this.matchTime;
     this.scene.fog.density += ((foggy ? 0.055 : 0.026) - this.scene.fog.density) * Math.min(1, delta * 1.6);
@@ -1945,6 +2524,16 @@ class UnmarkedGame {
     dom.healthValue.textContent = Math.ceil(this.player.health);
     dom.staminaFill.style.width = `${this.player.stamina}%`;
     dom.heldItem.textContent = this.player.held ? this.player.held.toUpperCase() : 'EMPTY';
+    if (this.isTutorial && this.interactiveTutorialState && !this.interactiveTutorialState.complete) {
+      // Tutorial HUD is driven by refreshTutorialCard; keep objective hidden
+      dom.objectiveCard.classList.add('hidden');
+      dom.tutorialCard.classList.remove('hidden');
+      this.refreshTutorialCard();
+      return;
+    }
+    // Normal HUD
+    dom.tutorialCard.classList.add('hidden');
+    dom.objectiveCard.classList.remove('hidden');
     const state = getObjectiveState({
       playerRole: this.player.role,
       generators: this.generators,
@@ -2032,7 +2621,7 @@ class UnmarkedGame {
   }
 
   checkMatchState() {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.isTutorial) return;
     if (this.player.role === 'killer') {
       const survivors = getSurvivorCount(this.player, this.bots);
       if (survivors === 0) this.endMatch(true, 'The facility is silent. No witness remains to tell the story.', 'killer-win');
