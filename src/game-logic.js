@@ -151,6 +151,94 @@ export const TUTORIAL_MESSAGES = {
   keycardTaken: 'Reach the north Quarantine Exit and escape.',
 };
 
+/* ------------------------------------------------------------------ */
+/* Mode / phase helpers                                                */
+/* ------------------------------------------------------------------ */
+
+export const GAME_MODES = Object.freeze({
+  normal: 'normal',
+  tutorial: 'tutorial',
+});
+
+export const GAME_PHASES = Object.freeze({
+  menu: 'menu',
+  playing: 'playing',
+  paused: 'paused',
+  briefing: 'briefing',
+  ended: 'ended',
+});
+
+export function createGameSessionState() {
+  return {
+    mode: GAME_MODES.normal,
+    phase: GAME_PHASES.menu,
+    previousPhase: null,
+    tutorialActive: false,
+  };
+}
+
+export function startNormalSession(state = createGameSessionState()) {
+  return {
+    ...state,
+    mode: GAME_MODES.normal,
+    phase: GAME_PHASES.playing,
+    previousPhase: null,
+    tutorialActive: false,
+  };
+}
+
+export function startTutorialSession(state = createGameSessionState()) {
+  return {
+    ...state,
+    mode: GAME_MODES.tutorial,
+    phase: GAME_PHASES.playing,
+    previousPhase: null,
+    tutorialActive: true,
+  };
+}
+
+export function pauseSession(state) {
+  return {
+    ...state,
+    phase: GAME_PHASES.paused,
+    previousPhase: state?.phase ?? null,
+  };
+}
+
+export function openBriefingSession(state) {
+  return {
+    ...state,
+    phase: GAME_PHASES.briefing,
+    previousPhase: state?.phase ?? null,
+  };
+}
+
+export function closeBriefingSession(state) {
+  const returnPhase = state?.previousPhase === GAME_PHASES.paused ? GAME_PHASES.paused : GAME_PHASES.playing;
+  return {
+    ...state,
+    phase: returnPhase,
+    previousPhase: null,
+  };
+}
+
+export function exitTutorialSession(state = createGameSessionState()) {
+  return {
+    ...state,
+    mode: GAME_MODES.normal,
+    phase: GAME_PHASES.menu,
+    previousPhase: null,
+    tutorialActive: false,
+  };
+}
+
+export function isGameplayActive(stateOrMode, maybePhase) {
+  const phase = typeof stateOrMode === 'object' ? stateOrMode?.phase : maybePhase;
+  return phase === GAME_PHASES.playing;
+}
+
+export const isInputActive = isGameplayActive;
+
 /** Fresh per-match tutorial state: every hint fires at most once per match. */
 export function createTutorialState() {
   return {
