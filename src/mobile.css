@@ -27,15 +27,65 @@ body.touch-device .interaction-prompt kbd, body.touch-device .action-prompt kbd,
   .status-card { top: 61px; right: max(8px, env(safe-area-inset-right)); width: 142px; padding: 5px 7px; }
   .objective-card { top: 60px; width: min(290px, 42vw); padding: 7px 10px; }
   .objective-card h2 { font-size: 16px; margin-bottom: 6px; }
+  .tutorial-card { top: 60px; width: min(300px, 44vw); padding: 7px 10px; }
+  .tutorial-card h2 { font-size: 15px; margin-bottom: 4px; }
+  #tutorial-copy { font-size: 11px; }
+  .tutorial-hint { font-size: 8px; }
   .event-log { display: none; }
   #minimap { width: 88px; height: 88px; right: max(104px, calc(env(safe-area-inset-right) + 104px)); bottom: 13px; opacity: .75; }
   .subtitle { bottom: 97px; width: 52vw; font-size: 12px; }
+
+  /* Home-screen: make intro scrollable but keep canvas/HUD fixed */
+  .intro-screen { align-items: start; overflow: hidden; }
+  .intro-scroll {
+    display: block;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    height: 100dvh;
+    height: 100svh;
+    max-height: 100dvh;
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+  .intro-content {
+    width: min(560px, calc(100vw - 32px));
+    margin: 10px auto 0;
+    padding: 6px 0 12px;
+    /* Ensure buttons not behind notch */
+  }
+  .intro-content h1 { font-size: clamp(56px, 10vw, 84px); line-height: .78; margin-top: 2px; }
+  .tagline { margin: 10px 0 10px 2px; font-size: clamp(14px, 2vw, 18px); letter-spacing: .14em; }
+  .intro-rule { margin: 0 0 12px 2px; }
+  .intro-copy { margin: 0 0 14px 2px; font-size: 12px; line-height: 1.5; max-width: 500px; }
+  .feature-grid { margin: 0 0 14px 2px; }
+  .intro-actions { gap: 8px; width: 100%; }
+  .intro-actions .primary-button, .intro-actions .secondary-button { width: 100%; max-width: 320px; min-height: 46px; }
+  .intro-footer { position: relative; bottom: auto; left: auto; right: auto; margin: 18px auto 0; width: min(560px, calc(100vw - 32px)); padding-bottom: env(safe-area-inset-bottom); font-size: 7px; }
 }
 
 @media (pointer: coarse) and (orientation: portrait) {
-  .rotate-device { display: flex; position: fixed; z-index: 200; inset: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 30px; background: #020708; color: var(--ink); text-align: center; }
+  /* Show rotate hint only during gameplay; keep intro usable in portrait */
+  body:not(.in-tutorial):not(.in-match) .rotate-device { display: none !important; }
+  .rotate-device { display: flex; position: fixed; z-index: 200; inset: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 30px; padding-top: max(30px, env(safe-area-inset-top)); padding-bottom: max(30px, env(safe-area-inset-bottom)); background: #020708; color: var(--ink); text-align: center; }
   .rotate-device strong { color: var(--aqua); font: 700 30px var(--display); letter-spacing: .08em; }
   .rotate-device span { color: var(--muted); font: 11px var(--mono); }
+  /* Home screen remains usable in portrait: make it scrollable */
+  .intro-screen { align-items: start; overflow: hidden; }
+  .intro-scroll {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    height: 100dvh;
+    max-height: 100dvh;
+    display: block;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .intro-content { margin: 20px auto; width: min(560px, calc(100vw - 32px)); }
+  .intro-footer { position: relative; left: auto; right: auto; bottom: auto; margin: 20px auto 0; width: min(560px, calc(100vw - 32px)); }
 }
 
 @media (pointer: coarse) and (max-height: 500px) {
@@ -43,4 +93,58 @@ body.touch-device .interaction-prompt kbd, body.touch-device .action-prompt kbd,
   .objective-card p:last-child { display: none; }
   .touch-stick { transform: scale(.84); transform-origin: left bottom; }
   body.touch-device .touch-actions { transform: scale(.86); transform-origin: right bottom; }
+}
+
+/* Short landscape: tighten spacing, reduce decorative before controls */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 440px) {
+  .intro-content h1 { font-size: clamp(48px, 9vw, 68px); }
+  .intro-copy { font-size: 11px; line-height: 1.45; margin-bottom: 10px; }
+  .feature-grid { min-height: 0; }
+  .feature-grid div { min-height: 42px; padding: 6px 6px; }
+  .feature-grid span { font-size: 9px; line-height: 1.25; }
+  .intro-rule { height: 2px; margin-bottom: 10px; }
+  .tagline { margin: 8px 0 8px 2px; }
+}
+
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 390px) {
+  .feature-grid { border-top: none; border-bottom: none; margin-bottom: 8px; }
+  .feature-grid div { min-height: 36px; }
+  .feature-grid span { display: none; } /* hide descriptive text, keep numbers */
+  .feature-grid b { font-size: 15px; }
+  .intro-copy { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 8px; }
+  .intro-actions { gap: 6px; }
+  .intro-footer { margin-top: 10px; font-size: 7px; opacity: .6; }
+  .screen-noise { opacity: .04; }
+  .tutorial-card { padding: 6px 8px; }
+  .tutorial-card h2 { font-size: 14px; }
+  #tutorial-copy { font-size: 10px; line-height: 1.35; }
+}
+
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 360px) {
+  .intro-content { margin-top: 6px; padding-top: 2px; }
+  .intro-content h1 { font-size: 44px; }
+  .tagline { font-size: 12px; margin: 6px 0 6px 2px; }
+  .intro-rule { width: 80px; margin-bottom: 6px; }
+  .feature-grid { display: none; } /* hide entirely to preserve buttons */
+  .intro-copy { display: none; } /* hide nonessential copy to keep buttons visible */
+  .intro-actions .primary-button, .intro-actions .secondary-button { min-height: 42px; padding: 10px 14px; font-size: 13px; }
+  .intro-footer { display: none; }
+  .intro-content .eyebrow { font-size: 9px; margin-bottom: 2px; }
+}
+
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 340px) {
+  .intro-content h1 { font-size: 38px; }
+  .intro-actions .primary-button, .intro-actions .secondary-button { min-height: 40px; font-size: 12px; }
+}
+
+/* Ensure game HUD and canvas never become scrollable */
+#hud, #game-canvas { overscroll-behavior: none; touch-action: none; }
+
+/* Tutorial complete screen on short landscape: keep buttons scrollable and tappable */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 500px) {
+  .result-screen { align-items: start; }
+  .result-content { margin: 10px auto; max-height: calc(100dvh - 20px); padding: 10px 0 max(12px, env(safe-area-inset-bottom)); }
+  .result-content h2 { font-size: clamp(36px, 8vw, 56px); }
+  .tutorial-checklist li { padding: 6px 8px 6px 24px; font-size: 11px; }
+  .tutorial-complete-actions .primary-button, .tutorial-complete-actions .secondary-button { min-width: 220px; min-height: 44px; }
 }
