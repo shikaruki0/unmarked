@@ -20,6 +20,7 @@ import {
   getObjectiveState,
   getSurvivorCount,
   getTutorialInstruction,
+  isInputActive,
   isTutorialComplete,
   pickEnvironmentalEvent,
 } from './game-logic.js';
@@ -54,6 +55,7 @@ const dom = {
   reportGrid: $('#report-grid'),
   playAgain: $('#play-again-button'),
   roleCard: $('#role-card'),
+  objectiveCard: $('#objective-card'),
   matchClock: $('#match-clock'),
   roleTitle: $('#role-title'),
   roleCopy: $('#role-copy'),
@@ -413,7 +415,7 @@ class UnmarkedGame {
     document.addEventListener('keydown', (event) => this.onKeyDown(event));
     document.addEventListener('keyup', (event) => this.keys.delete(event.code));
     document.addEventListener('mousemove', (event) => {
-      if (document.pointerLockElement !== dom.canvas || this.phase !== 'playing') return;
+      if (document.pointerLockElement !== dom.canvas || !this.isInputActive()) return;
       const modifier = this.settings.reducedMotion ? 0.00095 : 0.00175;
       const prevYaw = this.yaw;
       const prevPitch = this.pitch;
@@ -429,11 +431,11 @@ class UnmarkedGame {
         this.awaitingPointerLock = false;
         return;
       }
-      if (!this.isTouchDevice && this.phase === 'playing' && !this.awaitingPointerLock) this.pauseGame(true);
+      if (!this.isTouchDevice && this.isInputActive() && !this.awaitingPointerLock) this.pauseGame(true);
     });
     dom.canvas.addEventListener('mousedown', (event) => {
-      if (this.phase === 'playing' && document.pointerLockElement !== dom.canvas) this.requestPointerLock();
-      if (this.phase === 'playing' && event.button === 0 && document.pointerLockElement === dom.canvas) this.useAction();
+      if (this.isInputActive() && document.pointerLockElement !== dom.canvas) this.requestPointerLock();
+      if (this.isInputActive() && event.button === 0 && document.pointerLockElement === dom.canvas) this.useAction();
     });
     this.bindTouchControls();
   }
@@ -471,12 +473,12 @@ class UnmarkedGame {
     dom.touchStick.addEventListener('pointercancel', resetStick);
 
     dom.canvas.addEventListener('pointerdown', (event) => {
-      if (event.pointerType !== 'touch' || this.phase !== 'playing' || event.clientX < window.innerWidth * 0.36) return;
+      if (event.pointerType !== 'touch' || !this.isInputActive() || event.clientX < window.innerWidth * 0.36) return;
       this.touchLook = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
       dom.canvas.setPointerCapture(event.pointerId);
     });
     dom.canvas.addEventListener('pointermove', (event) => {
-      if (event.pointerId !== this.touchLook.pointerId || this.phase !== 'playing') return;
+      if (event.pointerId !== this.touchLook.pointerId || !this.isInputActive()) return;
       event.preventDefault();
       const sensitivity = this.settings.reducedMotion ? 0.0024 : 0.0034;
       const prevYaw = this.yaw;
@@ -496,7 +498,7 @@ class UnmarkedGame {
 
     const holdInteract = (event) => {
       stop(event);
-      if (this.phase !== 'playing') return;
+      if (!this.isInputActive()) return;
       // Tutorial trust lesson: USE also acknowledges
       if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11) {
         this.signalInteractiveTutorial({ type: 'trustAcknowledged' });
@@ -517,7 +519,7 @@ class UnmarkedGame {
     dom.touchAction.addEventListener('pointerdown', (event) => { stop(event); this.useAction(); });
     dom.touchFlashlight.addEventListener('pointerdown', (event) => {
       stop(event);
-      if (this.phase !== 'playing') return;
+      if (!this.isInputActive()) return;
       this.flashlightOn = !this.flashlightOn;
       this.showSubtitle(this.flashlightOn ? 'Flashlight on.' : 'Flashlight off.', 1050);
       this.audio.cue(this.flashlightOn ? 'pickup' : 'sabotage');
@@ -525,6 +527,20 @@ class UnmarkedGame {
         this.signalInteractiveTutorial({ type: 'flashlightToggled', on: this.flashlightOn });
       }
     });
+  }
+
+  isInputActive() {
+    return isInputActive({ mode: this.isTutorial ? 'tutorial' : 'normal', phase: this.phase });
+  }
+
+  resetTouchInput() {
+    this.touchMove.x = 0;
+    this.touchMove.y = 0;
+    this.touchMove.pointerId = null;
+    this.touchLook.pointerId = null;
+    if (dom.touchStickKnob) dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    dom.touchInteract?.classList.remove('pressed');
+    this.keys.delete('KeyE');
   }
 
   onKeyDown(event) {
@@ -538,14 +554,14 @@ class UnmarkedGame {
       return;
     }
     if (event.code === 'KeyH' && !event.repeat) {
-      if (this.phase === 'playing') this.openBriefing();
+      if (this.isInputActive()) this.openBriefing();
       return;
     }
     if (event.code === 'Escape') {
-      if (this.phase === 'playing') this.pauseGame();
+      if (this.isInputActive()) this.pauseGame();
       return;
     }
-    if (this.phase !== 'playing' || event.repeat) return;
+    if (!this.isInputActive() || event.repeat) return;
     // Tutorial trust lesson: any E acknowledges
     if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11 && event.code === 'KeyE') {
       this.signalInteractiveTutorial({ type: 'trustAcknowledged' });
@@ -572,12 +588,10 @@ class UnmarkedGame {
   }
 
   pauseGame(fromPointerChange = false) {
-    if (this.phase !== 'playing') return;
+    if (!this.isInputActive()) return;
     this.phase = 'paused';
     this.keys.clear();
-    this.touchMove.x = 0;
-    this.touchMove.y = 0;
-    dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    this.resetTouchInput();
     dom.pause.classList.remove('hidden');
     // Tutorial pause shows EXIT TRAINING, hides abandon match during training
     if (dom.tutorialPauseExit) {
@@ -661,8 +675,9 @@ class UnmarkedGame {
   openBriefing() {
     if (this.briefingOpen) return;
     this.briefingOpen = true;
-    if (this.phase === 'playing') {
+    if (this.isInputActive()) {
       this.keys.clear();
+      this.resetTouchInput();
       this.player.interaction = null;
       this.phase = 'briefing';
       if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
@@ -679,6 +694,7 @@ class UnmarkedGame {
     this.briefingOpen = false;
     dom.briefing.classList.add('hidden');
     this.keys.clear();
+    this.resetTouchInput();
     if (this.phase === 'briefing') {
       this.phase = 'playing';
       this.requestPointerLock();
@@ -691,7 +707,7 @@ class UnmarkedGame {
   signalTutorial(type) {
     const result = advanceTutorial(this.tutorialState, { type });
     this.tutorialState = result.state;
-    if (result.message && this.phase === 'playing' && !this.isTutorial) this.showSubtitle(result.message, 3800);
+    if (result.message && this.isInputActive() && !this.isTutorial) this.showSubtitle(result.message, 3800);
   }
 
   signalInteractiveTutorial(signal) {
@@ -780,8 +796,7 @@ class UnmarkedGame {
     this.audio.cue('complete');
     // Ensure touch controls reset
     this.keys.clear();
-    this.touchMove.x = 0; this.touchMove.y = 0;
-    if (dom.touchStickKnob) dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    this.resetTouchInput();
   }
 
   exitTutorialToHome() {
@@ -810,8 +825,7 @@ class UnmarkedGame {
     this.briefingOpen = false;
     this.phase = 'menu';
     this.keys.clear();
-    this.touchMove.x = 0; this.touchMove.y = 0;
-    if (dom.touchStickKnob) dom.touchStickKnob.style.transform = 'translate(0, 0)';
+    this.resetTouchInput();
     this.yaw = Math.PI;
     this.pitch = -0.06;
     this.updateCamera();
@@ -1107,6 +1121,7 @@ class UnmarkedGame {
     this.scene.fog.density = 0.026;
     this.ambientLight.intensity = 0.32;
     this.keys.clear();
+    this.resetTouchInput();
     dom.intro.classList.add('hidden');
     dom.accessibility.classList.add('hidden');
     dom.pause.classList.add('hidden');
@@ -1157,6 +1172,7 @@ class UnmarkedGame {
     this.scene.fog.density = 0.026;
     this.ambientLight.intensity = 0.32;
     this.keys.clear();
+    this.resetTouchInput();
 
     dom.intro.classList.add('hidden');
     dom.accessibility.classList.add('hidden');
@@ -1483,7 +1499,7 @@ class UnmarkedGame {
   renderLoop() {
     requestAnimationFrame(() => this.renderLoop());
     const delta = Math.min(this.clock.getDelta(), 0.05);
-    if (this.phase === 'playing') this.update(delta);
+    if (this.isInputActive()) this.update(delta);
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -1983,7 +1999,7 @@ class UnmarkedGame {
   }
 
   useAction() {
-    if (this.phase !== 'playing' || this.player.actionCooldown > this.matchTime || !this.player.alive || this.player.hidden) return;
+    if (!this.isInputActive() || this.player.actionCooldown > this.matchTime || !this.player.alive || this.player.hidden) return;
     // Tutorial branch: safe taser/pipe on training objects, no lethal consequences
     if (this.isTutorial) {
       const targetNearby = this.tutorialTarget ? vecDistance(this.player.position, this.tutorialTarget.position) < 2.6 : false;
@@ -2632,6 +2648,7 @@ class UnmarkedGame {
     if (this.phase === 'ended') return;
     this.phase = 'ended';
     this.keys.clear();
+    this.resetTouchInput();
     this.briefingOpen = false;
     dom.briefing.classList.add('hidden');
     if (document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
