@@ -182,4 +182,14 @@ tests/game-logic.test.mjs          Rule-level regression tests (killer assignmen
 tests/interactive-tutorial.test.mjs Interactive tutorial state-machine tests (12 steps, guards, determinism, normal-match isolation)
 tests/three-utils.test.mjs         Match-restart resource-disposal regression tests
 vite.config.js                     Local and Arena preview server configuration
+docs/WHERE_WE_LEFT_OFF.md          Status recap: what is built, what is missing, what is next
+docs/planning/                     Original master prompt, roadmap, and project board
 ```
+
+## Returning to this project
+
+If you are picking UNMARKED up after a break, start with
+[`docs/WHERE_WE_LEFT_OFF.md`](docs/WHERE_WE_LEFT_OFF.md). It lists the verified build
+status, what is already playable, honest gaps against the master prompt, and the
+recommended next milestone. The three original planning documents are archived in
+[`docs/planning/`](docs/planning/).
