@@ -190,6 +190,10 @@ docs/planning/                     Original master prompt, roadmap, and project 
 
 If you are picking UNMARKED up after a break, start with
 [`docs/WHERE_WE_LEFT_OFF.md`](docs/WHERE_WE_LEFT_OFF.md). It lists the verified build
-status, what is already playable, honest gaps against the master prompt, and the
-recommended next milestone. The three original planning documents are archived in
-[`docs/planning/`](docs/planning/).
+status, what is already playable, and honest gaps against the master prompt.
+
+The execution plan is [`docs/MASTER_ROADMAP.md`](docs/MASTER_ROADMAP.md): 13 milestones
+from the current prototype to a published game, each with a Definition of Done, tests,
+and an honest time estimate.
+
+The three original planning documents are archived in [`docs/planning/`](docs/planning/).

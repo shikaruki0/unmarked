@@ -127,6 +127,10 @@ These are real, verified gaps — not guesses:
 
 ## ▶️ My one recommendation for the next session
 
+> The complete multi-milestone plan now lives in
+> [`docs/MASTER_ROADMAP.md`](MASTER_ROADMAP.md) — 13 milestones from this prototype to launch.
+> The first build milestone is **M1: The Stalker's Rules**, summarised below.
+
 **Make the killer obey the UNMARKED rules.**
 
 This is Phase 2’s unfinished Definition of Done, and it is the difference between
