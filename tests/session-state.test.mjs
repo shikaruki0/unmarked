@@ -9,6 +9,7 @@ import {
   isInputActive,
   openBriefingSession,
   pauseSession,
+  shouldUseTouchControls,
   startNormalSession,
   startTutorialSession,
 } from '../src/game-logic.js';
@@ -83,4 +84,17 @@ test('input-active logic is false for paused, briefing, menu, and ended phases',
     assert.equal(isInputActive({ mode: GAME_MODES.normal, phase }), false, phase);
     assert.equal(isInputActive({ mode: GAME_MODES.tutorial, phase }), false, phase);
   }
+});
+
+test('shouldUseTouchControls keeps PC mouse look enabled on touchscreen laptops while enabling phones', () => {
+  // Desktop with mouse only
+  assert.equal(shouldUseTouchControls({ coarsePointer: false, finePointer: true, maxTouchPoints: 0 }), false);
+  // Touchscreen Windows laptop / 2-in-1 with primary mouse/trackpad
+  assert.equal(shouldUseTouchControls({ coarsePointer: false, finePointer: true, maxTouchPoints: 10 }), false);
+  // Phone / tablet primary touch
+  assert.equal(shouldUseTouchControls({ coarsePointer: true, finePointer: false, maxTouchPoints: 5 }), true);
+  // Fallback touch-only browser without pointer media queries
+  assert.equal(shouldUseTouchControls({ coarsePointer: false, finePointer: false, maxTouchPoints: 5 }), true);
+  // Unknown non-touch environment
+  assert.equal(shouldUseTouchControls({}), false);
 });

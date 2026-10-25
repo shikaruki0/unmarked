@@ -239,6 +239,18 @@ export function isGameplayActive(stateOrMode, maybePhase) {
 
 export const isInputActive = isGameplayActive;
 
+/**
+ * Determines whether touch controls should be active initially based on browser
+ * pointer capabilities. Touchscreen laptops report maxTouchPoints > 0 alongside
+ * a fine primary pointer (mouse/trackpad); treating them as touch-only disables
+ * pointer lock and breaks mouse look.
+ */
+export function shouldUseTouchControls({ coarsePointer = false, finePointer = false, maxTouchPoints = 0 } = {}) {
+  if (coarsePointer) return true;
+  if (finePointer) return false;
+  return maxTouchPoints > 0;
+}
+
 /** Fresh per-match tutorial state: every hint fires at most once per match. */
 export function createTutorialState() {
   return {
