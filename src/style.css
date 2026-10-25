@@ -190,7 +190,7 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .tutorial-complete-content { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 
 .loading-screen { position: fixed; z-index: 100; inset: 0; display: grid; place-content: center; justify-items: center; gap: 13px; background: #040b0d; color: var(--aqua); transition: opacity .6s, visibility .6s; }
-.loading-screen.done { opacity: 0; visibility: hidden; }
+.loading-screen.done { opacity: 0; visibility: hidden; pointer-events: none; }
 .loading-mark { display: grid; place-items: center; width: 52px; height: 52px; border: 1px solid var(--aqua); font: 700 38px var(--display); box-shadow: 0 0 26px rgba(126,255,198,.18); animation: load-pulse 1.3s ease-in-out infinite; }
 .loading-screen p { margin: 0; font: 10px var(--mono); letter-spacing: .18em; }
 .loading-screen span { width: 125px; height: 1px; overflow: hidden; background: rgba(137,255,199,.21); }

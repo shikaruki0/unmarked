@@ -23,6 +23,7 @@ import {
   isInputActive,
   isTutorialComplete,
   pickEnvironmentalEvent,
+  shouldUseTouchControls,
 } from './game-logic.js';
 import { disposeObjectTree } from './three-utils.js';
 
@@ -276,7 +277,7 @@ class UnmarkedGame {
     this.phase = 'menu';
     this.matchTime = 0;
     this.random = Math.random;
-    this.yaw = Math.PI;
+    this.yaw = 0;
     this.pitch = -0.06;
     this.cameraShake = 0;
     this.keys = new Set();
@@ -298,7 +299,11 @@ class UnmarkedGame {
     this.nextEventAt = 30;
     this.exitDoorOpen = 0;
     this.awaitingPointerLock = false;
-    this.isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+    this.isTouchDevice = shouldUseTouchControls({
+      coarsePointer: window.matchMedia('(pointer: coarse)').matches,
+      finePointer: window.matchMedia('(pointer: fine)').matches,
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+    });
     this.touchMove = { x: 0, y: 0, pointerId: null };
     this.touchLook = { pointerId: null, x: 0, y: 0 };
     document.body.classList.toggle('touch-device', this.isTouchDevice);
@@ -437,11 +442,27 @@ class UnmarkedGame {
       if (this.isInputActive() && document.pointerLockElement !== dom.canvas) this.requestPointerLock();
       if (this.isInputActive() && event.button === 0 && document.pointerLockElement === dom.canvas) this.useAction();
     });
+    window.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'touch' && !this.isTouchDevice) {
+        this.setTouchMode(true);
+      } else if (event.pointerType === 'mouse' && this.isTouchDevice && !window.matchMedia('(pointer: coarse)').matches) {
+        this.setTouchMode(false);
+      }
+    });
     this.bindTouchControls();
   }
 
+  setTouchMode(enabled) {
+    if (this.isTouchDevice === enabled) return;
+    this.isTouchDevice = enabled;
+    document.body.classList.toggle('touch-device', enabled);
+    if (enabled && document.pointerLockElement === dom.canvas) document.exitPointerLock?.();
+    if (!enabled) this.resetTouchInput();
+    this.buildBriefing();
+    if (this.isTutorial) this.refreshTutorialCard();
+  }
+
   bindTouchControls() {
-    if (!this.isTouchDevice) return;
     const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
     const resetStick = () => {
       this.touchMove.x = 0;
@@ -826,7 +847,7 @@ class UnmarkedGame {
     this.phase = 'menu';
     this.keys.clear();
     this.resetTouchInput();
-    this.yaw = Math.PI;
+    this.yaw = 0;
     this.pitch = -0.06;
     this.updateCamera();
     this.flashlightOn = true;
@@ -1108,7 +1129,7 @@ class UnmarkedGame {
       interaction: null,
       actionCooldown: 0,
     };
-    this.yaw = Math.PI;
+    this.yaw = 0;
     this.pitch = -0.06;
     this.tutorialPrevYaw = this.yaw;
     this.tutorialPrevPitch = this.pitch;
@@ -1162,7 +1183,7 @@ class UnmarkedGame {
       interaction: null,
       actionCooldown: 0,
     };
-    this.yaw = Math.PI;
+    this.yaw = 0;
     this.pitch = -0.07;
     this.cameraShake = 0;
     this.flashlightOn = true;
@@ -1217,15 +1238,16 @@ class UnmarkedGame {
   }
 
   createTutorialObjects() {
-    // Reuse existing environment: single desk, one tutorial generator near lobby, det. placement
+    // Reuse existing environment: single desk, deterministic placement
     this.createBriefingDesk();
     this.generators = [
       this.createGenerator(ZONES.generatorA, 1),
       this.createGenerator(ZONES.generatorB, 2),
       this.createGenerator(ZONES.generatorC, 3),
     ];
-    // Designate generatorA as the controlled tutorial node: easy to locate near center-lobby approach
-    this.tutorialGenerator = this.generators[0];
+    // Designate generatorC (south-west wing, closest to lobby) as primary highlight,
+    // while allowing any player-repaired power node to satisfy Step 6.
+    this.tutorialGenerator = this.generators[2];
     // Move tutorial generator slightly closer to lobby for accessibility but keep zone access valid
     // The generator itself stays at its zone; we just ensure AI will ignore it.
     this.createKeycard();
@@ -1536,11 +1558,18 @@ class UnmarkedGame {
       // Tutorial objective highlights: glow the relevant object for current step
       const step = this.interactiveTutorialState.step;
       const timePulse = this.settings.reducedMotion ? 0.9 : 0.7 + Math.sin(this.matchTime * 2.1) * 0.28;
-      if (this.tutorialGenerator && step === 6) {
-        this.tutorialGenerator.light.intensity = 0.6 + timePulse * 0.7;
-        this.tutorialGenerator.panel.material.emissiveIntensity = 1.2 + timePulse * 1.0;
+      if (step === 6) {
+        for (const gen of this.generators) {
+          if (gen.repaired) continue;
+          gen.light.intensity = 0.6 + timePulse * 0.7;
+          gen.panel.material.emissiveIntensity = 1.2 + timePulse * 1.0;
+        }
       }
       if (this.tutorialTaser && step === 7) {
+        if (!this.interactiveTutorialState.taserUsed && this.player.held !== 'taser' && !this.tutorialTaser.available) {
+          this.tutorialTaser.available = true;
+          this.tutorialTaser.group.visible = true;
+        }
         const aura = this.tutorialTaser.group.children.find(c => c.isPointLight);
         if (aura) aura.intensity = 0.45 + timePulse * 0.45;
         // Gentle vertical bounce
@@ -1634,6 +1663,14 @@ class UnmarkedGame {
       const st = this.interactiveTutorialState.step;
       if (st === 2 && movedDistance > 0.001) {
         this.signalInteractiveTutorial({ type: 'moved', distance: movedDistance });
+        if (
+          this.interactiveTutorialState.step === 2 &&
+          this.interactiveTutorialState.distanceMoved >= 1.2 &&
+          this.briefingLetter &&
+          vecDistance(this.player.position, this.briefingLetter.position) < 2.05
+        ) {
+          this.signalInteractiveTutorial({ type: 'reachedDesk' });
+        }
       }
       if (st === 5 && sprinting && movedDistance > 0.001) {
         this.signalInteractiveTutorial({ type: 'sprinting', delta, sprinting: true });
@@ -1699,15 +1736,19 @@ class UnmarkedGame {
       return;
     }
     if (type === 'generator') {
+      if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step < 6) {
+        this.showSubtitle('Complete the current training step before repairing power.', 1800);
+        return;
+      }
       if (ref.repaired && this.player.role === 'killer' && !this.isTutorial) {
         this.player.interaction = { type: 'sabotage', ref, duration: 1.5, elapsed: 0 };
-        this.showSubtitle('Hold E to overload the power node.', 1100);
+        this.showSubtitle(this.isTouchDevice ? 'Hold USE to overload the power node.' : 'Hold E to overload the power node.', 1100);
       } else if (!ref.repaired) {
-        // Tutorial: slightly faster repair for training node
-        const isTutorialGen = this.isTutorial && ref === this.tutorialGenerator;
-        const duration = isTutorialGen ? 2.4 : (this.player.role === 'killer' ? 5.2 : 3.75);
+        // Tutorial: slightly faster repair for any offline power node
+        const duration = this.isTutorial ? 2.4 : (this.player.role === 'killer' ? 5.2 : 3.75);
         this.player.interaction = { type: 'repair', ref, duration, elapsed: 0 };
-        const prompt = this.isTutorial && isTutorialGen ? 'Hold to repair the training power node.' : (this.player.role === 'killer' ? 'Hold E to pretend to repair the power node.' : 'Hold E to repair the power node.');
+        const holdKey = this.isTouchDevice ? 'USE' : 'E';
+        const prompt = this.isTutorial ? `Hold ${holdKey} to repair the training power node.` : (this.player.role === 'killer' ? `Hold ${holdKey} to pretend to repair the power node.` : `Hold ${holdKey} to repair the power node.`);
         this.showSubtitle(prompt, 1100);
       } else {
         this.showSubtitle('The power node is online.', 1000);
@@ -1761,9 +1802,9 @@ class UnmarkedGame {
     this.logEvent(`PWR-${String(generator.index).padStart(2, '0')} comes online.`, 'normal');
     this.showSubtitle(actor === 'YOU' ? 'Power node stabilized.' : 'A generator hums to life nearby.', 1800);
     if (!this.isTutorial && firstCompletion) this.signalTutorial('firstGeneratorDone');
-    if (this.isTutorial && actor === 'YOU' && generator === this.tutorialGenerator) {
+    if (this.isTutorial && actor === 'YOU') {
       this.signalInteractiveTutorial({ type: 'generatorRepaired', byPlayer: true });
-      // Tutorial unlocks security after ONE node
+      // Tutorial unlocks security after ONE player-repaired node
       if (!this.securityUnlocked) {
         this.securityUnlocked = true;
         if (this.keycard) {
@@ -1772,7 +1813,7 @@ class UnmarkedGame {
           this.keycard.group.position.set(23.1, 1.45, 19.2);
         }
         this.logEvent('Training: Security office unlocked: exit keycard available.', 'warning');
-        this.showSubtitle('Training: Emergency power restored. Find the keycard inside Security.', 3200);
+        this.showSubtitle('Training: Emergency power restored. Return to the lobby for defense training.', 3200);
         this.audio.cue('alarm');
       }
       return;
@@ -1804,8 +1845,14 @@ class UnmarkedGame {
 
   takeKeycard(actor) {
     if (!this.keycard?.active || this.keycard.taken) return;
-    // In tutorial, only player collection counts for progress; bots should not take it
-    if (this.isTutorial && actor !== 'YOU') return;
+    // In tutorial, only player collection at Step 9+ counts; bots should not take it
+    if (this.isTutorial) {
+      if (actor !== 'YOU') return;
+      if (this.interactiveTutorialState && this.interactiveTutorialState.step < 9) {
+        this.showSubtitle('Finish defense training in the lobby first (Steps 7–8).', 2000);
+        return;
+      }
+    }
     this.keycard.taken = true;
     this.keycardTaken = true;
     this.keycard.group.visible = false;
@@ -1861,6 +1908,16 @@ class UnmarkedGame {
 
   takePickup(pickup) {
     if (!pickup.available) return;
+    if (this.isTutorial && this.interactiveTutorialState) {
+      if (pickup.kind === 'taser' && this.interactiveTutorialState.step < 7) {
+        this.showSubtitle('Complete the current training step before taser training.', 1800);
+        return;
+      }
+      if (pickup.kind === 'pipe' && this.interactiveTutorialState.step < 8) {
+        this.showSubtitle('Complete taser training first before inspecting the pipe.', 1800);
+        return;
+      }
+    }
     pickup.available = false;
     pickup.group.visible = false;
     this.player.held = pickup.kind;
@@ -1868,7 +1925,8 @@ class UnmarkedGame {
     this.logEvent(`You took a ${pickup.kind === 'taser' ? 'taser' : 'metal pipe'}.`, 'warning');
     if (this.isTutorial) {
       if (pickup.kind === 'taser') {
-        this.showSubtitle('Taser acquired. Find the TRAINING TARGET and use ACT / F to stun it.', 3000);
+        const useActionKey = this.isTouchDevice ? 'ACT' : 'F';
+        this.showSubtitle(`Taser acquired. Find the TRAINING TARGET and use ${useActionKey} to stun it.`, 3000);
         this.signalInteractiveTutorial({ type: 'taserCollected' });
       } else if (pickup.kind === 'pipe') {
         this.showSubtitle('The pipe is dangerous. Harming an innocent causes serious consequences. Violence is a last resort.', 3800);
@@ -1982,19 +2040,25 @@ class UnmarkedGame {
   interactionLabel(target) {
     if (!target) return null;
     const { type, ref } = target;
+    const tutStep = this.isTutorial && this.interactiveTutorialState ? this.interactiveTutorialState.step : null;
     if (type === 'letter') return 'E — READ INCIDENT BRIEFING';
     if (type === 'generator') {
+      if (tutStep !== null && tutStep < 6) return 'POWER NODE — TRAINING STEP 6';
       if (ref.repaired && this.player.role === 'killer' && !this.isTutorial) return 'HOLD E — SABOTAGE POWER NODE';
       if (ref.repaired) return 'POWER NODE ONLINE';
       return this.player.role === 'killer' && !this.isTutorial ? 'HOLD E — PRETEND TO REPAIR' : 'HOLD E — REPAIR POWER NODE';
     }
-    if (type === 'keycard') return 'E — TAKE EXIT KEYCARD';
+    if (type === 'keycard') return tutStep !== null && tutStep < 9 ? 'KEYCARD — TRAINING STEP 9' : 'E — TAKE EXIT KEYCARD';
     if (type === 'exit') return this.keycardTaken ? 'E — OPEN EXIT / ESCAPE' : 'EXIT LOCKED — KEYCARD REQUIRED';
-    if (type === 'pickup') return `E — TAKE ${ref.kind.toUpperCase()}`;
+    if (type === 'pickup') {
+      if (tutStep !== null && ref.kind === 'taser' && tutStep < 7) return 'TASER — TRAINING STEP 7';
+      if (tutStep !== null && ref.kind === 'pipe' && tutStep < 8) return 'PIPE — TRAINING STEP 8';
+      return `E — TAKE ${ref.kind.toUpperCase()}`;
+    }
     if (type === 'evidence') return 'E — INVESTIGATE EVIDENCE';
     if (type === 'terminal') return 'E — REVIEW SECURITY FEED';
     if (type === 'locker') return 'E — HIDE IN LOCKER';
-    if (type === 'trainingDummy') return 'E — LEARN ABOUT THE PIPE';
+    if (type === 'trainingDummy') return tutStep !== null && tutStep < 8 ? 'DUMMY — TRAINING STEP 8' : 'E — LEARN ABOUT THE PIPE';
     return null;
   }
 
@@ -2044,15 +2108,14 @@ class UnmarkedGame {
         this.showSubtitle(this.isTouchDevice ? 'You need a taser first. Look for the glowing pickup.' : 'You need a taser first.', 1400);
         return;
       }
-      // If tutorial taser used on a bot, just stun safely without advancing (only training target advances)
+      // If tutorial taser used on a bot, stun safely WITHOUT consuming the taser so Step 7 cannot softlock
       const nearestBot = this.getNearestBot(2.15);
       if (nearestBot && this.player.held === 'taser') {
-        this.player.held = null;
         this.player.actionCooldown = this.matchTime + 0.8;
         nearestBot.stunUntil = this.matchTime + 5;
         this.createPulse(nearestBot.position, COLORS.amber, 1.5);
         this.audio.cue('taser');
-        this.showSubtitle('Training stun — the figure is dazed. For real progress, use the TRAINING TARGET.', 2200);
+        this.showSubtitle('Training stun — keep your taser and use it on the TRAINING TARGET.', 2200);
         return;
       }
       this.showSubtitle('No training target in reach.', 900);
@@ -2165,10 +2228,14 @@ class UnmarkedGame {
   chooseSurvivorGoal(bot, pretending = false) {
     bot.routeEntered = false;
     bot.goalUntil = this.matchTime + 4.8 + this.random() * 5.5;
+    if (this.isTutorial) {
+      const wandering = [ZONES.lobby, ZONES.generatorA, ZONES.generatorB, ZONES.generatorC];
+      const choice = randomFrom(this.random, wandering);
+      bot.goal = { type: 'wander', ref: choice, position: choice.access, access: null };
+      return;
+    }
     if (!this.securityUnlocked) {
-      let offline = this.generators.filter((node) => !node.repaired);
-      // Tutorial: bots must not repair the controlled training node; leave it for the player
-      if (this.isTutorial && this.tutorialGenerator) offline = offline.filter(n => n !== this.tutorialGenerator);
+      const offline = this.generators.filter((node) => !node.repaired);
       if (offline.length && this.random() < 0.8) {
         offline.sort((a, b) => vecDistance(bot.position, a.position) - vecDistance(bot.position, b.position));
         const choice = this.random() < 0.62 ? offline[0] : randomFrom(this.random, offline);
@@ -2444,6 +2511,8 @@ class UnmarkedGame {
       effect.material.opacity = (1 - progress) * 0.5;
       if (progress >= 1) {
         this.fxGroup.remove(effect.mesh);
+        effect.mesh.geometry?.dispose();
+        effect.material?.dispose();
         this.vfx.splice(i, 1);
       }
     }
@@ -2506,14 +2575,18 @@ class UnmarkedGame {
   }
 
   updatePrompts() {
+    const useKey = this.isTouchDevice ? 'USE' : 'E';
     if (this.player.hidden) {
       dom.interaction.classList.remove('hidden');
-      dom.interactionText.textContent = 'E — LEAVE LOCKER';
+      dom.interactionText.textContent = `${useKey} — LEAVE LOCKER`;
     } else if (this.player.interaction) {
       const { type, elapsed, duration } = this.player.interaction;
       const amount = Math.floor((elapsed / duration) * 100);
       dom.interaction.classList.remove('hidden');
-      dom.interactionText.textContent = `${type === 'sabotage' ? 'OVERLOADING' : 'REPAIRING'} ${amount}% — HOLD E`;
+      dom.interactionText.textContent = `${type === 'sabotage' ? 'OVERLOADING' : 'REPAIRING'} ${amount}% — HOLD ${useKey}`;
+    } else if (this.isTutorial && this.interactiveTutorialState && this.interactiveTutorialState.step === 11) {
+      dom.interaction.classList.remove('hidden');
+      dom.interactionText.textContent = `${useKey} — CONTINUE`;
     } else {
       const target = this.getNearestInteractable();
       const label = this.interactionLabel(target);
